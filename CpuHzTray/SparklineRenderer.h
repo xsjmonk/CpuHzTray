@@ -9,11 +9,10 @@ struct SparklineStyle
 {
 	int padding = 1;
 
-	// Gradient colors (top #9EBCE7, bottom #1476FD)
 	// Alpha is applied uniformly to the entire plot (fill + outline + dot).
 	BYTE alpha = 250;
 
-	COLORREF topRgb = RGB(0xDE, 0xEA, 0xFC);
+	COLORREF topRgb = RGB(0xD8, 0xE8, 0xFF);
 	COLORREF bottomRgb = RGB(0x14, 0x75, 0xFF);
 
 	// Outline/dot use bottom color (with same alpha)

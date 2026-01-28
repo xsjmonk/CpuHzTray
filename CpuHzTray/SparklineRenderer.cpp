@@ -135,12 +135,23 @@ const int left = plotRc.X;
 
 	// Fill with vertical gradient with a "plateau":
 	// top 2/3 stays at topRgb, bottom 1/3 transitions to bottomRgb (Proxifier-like)
+	/*Gdiplus::LinearGradientBrush fillBrush(
+		Gdiplus::Point(plotRc.X, plotRc.Y),
+		Gdiplus::Point(plotRc.X, plotRc.GetBottom()),
+		cTop,
+		cBot
+	);*/
+
 	Gdiplus::LinearGradientBrush fillBrush(
 		Gdiplus::Point(plotRc.X, plotRc.Y),
 		Gdiplus::Point(plotRc.X, plotRc.GetBottom()),
 		cTop,
 		cBot
 	);
+
+
+// NO SetInterpolationColors call
+
 
 	Gdiplus::Color colors[3] = { cTop, cTop, cBot };
 	Gdiplus::REAL positions[3] = { 0.0f, 0.6667f, 1.0f };
