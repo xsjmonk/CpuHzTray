@@ -1,0 +1,27 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+x64/
+x86/
+Debug/
+Release/
+
+# Visual Studio files
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# CMake / build system leftovers (just in case)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Logs / dumps
+*.log
+*.dmp
+
+# OS noise
+Thumbs.db
+.DS_Store
