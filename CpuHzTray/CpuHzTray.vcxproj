@@ -83,11 +83,14 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="CpuFrequency.cpp" />
     <ClCompile Include="IconRenderer.cpp" />
+    <ClCompile Include="SparklineRenderer.cpp" />
   </ItemGroup>
 
   <ItemGroup>
     <ClInclude Include="CpuFrequency.h" />
     <ClInclude Include="IconRenderer.h" />
+    <ClInclude Include="HistoryBuffer.h" />
+    <ClInclude Include="SparklineRenderer.h" />
     <ClInclude Include="TrayApp.h" />
   </ItemGroup>
 

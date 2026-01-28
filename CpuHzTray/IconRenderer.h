@@ -1,10 +1,13 @@
 #pragma once
 #include <windows.h>
 
+#include "HistoryBuffer.h"
+
 struct IconSpec
 {
 	double ghz = 0;
 	bool overBase = false;
+	const RingBufferD<60>* historyMHz = nullptr; // optional, oldest->newest
 };
 
 class IconRenderer

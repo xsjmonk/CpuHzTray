@@ -2,6 +2,12 @@
 #include "CpuFrequency.h"
 #include "IconRenderer.h"
 
+#include "HistoryBuffer.h"
+
+// GDI+ relies on COM declarations like IStream.
+#include <objidl.h>
+#include <gdiplus.h>
+
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -13,23 +19,30 @@ static HICON g_hIcon = nullptr;
 
 static CpuFrequency g_cpu;
 static IconRenderer g_renderer;
+static RingBufferD<60> g_historyMHz;
+
+static ULONG_PTR g_gdiplusToken = 0;
 
 static double ToGhz(double mhz) { return mhz / 1000.0; }
 
 static void UpdateTrayIcon(HWND hwnd)
 {
 	auto reading = g_cpu.Read();
+	if(reading.ok)
+		g_historyMHz.Push(reading.currentMHz);
 
 	IconSpec spec{};
 	if(reading.ok)
 	{
 		spec.ghz = ToGhz(reading.currentMHz);
 		spec.overBase = (reading.baseMHz > 0) ? (reading.currentMHz > reading.baseMHz) : false;
+		spec.historyMHz = &g_historyMHz;
 	}
 	else
 	{
 		spec.ghz = 0;
 		spec.overBase = false;
+		spec.historyMHz = nullptr;
 	}
 
 	HICON next = g_renderer.Render(spec);
@@ -118,6 +131,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 {
+	// GDI+ is used for sparkline rendering.
+	Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+	if(Gdiplus::GdiplusStartup(&g_gdiplusToken, &gdiplusStartupInput, nullptr) != Gdiplus::Ok)
+		g_gdiplusToken = 0;
+
 	g_cpu.Initialize();
 
 	WNDCLASSEXW wc{};
@@ -158,6 +176,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 		TranslateMessage(&m);
 		DispatchMessageW(&m);
 	}
+
+	if(g_gdiplusToken)
+		Gdiplus::GdiplusShutdown(g_gdiplusToken);
 
 	return 0;
 }

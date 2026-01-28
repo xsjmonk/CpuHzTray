@@ -1,5 +1,7 @@
 #include "IconRenderer.h"
 
+#include "SparklineRenderer.h"
+
 #include <windows.h>
 #include <wingdi.h>
 
@@ -7,6 +9,8 @@
 #include <cmath>
 #include <string>
 #include <vector>
+
+
 
 static std::wstring GetExeDir()
 {
@@ -170,7 +174,8 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 {
 	EnsureInit();
 
-	const int size = 96;
+	// Render at native tray size.
+	const int size = 32;
 
 	BITMAPV5HEADER bi{};
 	bi.bV5Size = sizeof(bi);
@@ -197,6 +202,19 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 
 	SetBkMode(hdc, TRANSPARENT);
 
+	// Draw sparkline first (GDI+ inside SparklineRenderer), then overlay text (GDI).
+	if(spec.historyMHz && spec.historyMHz->Count() >= 2)
+	{
+		double samples[60]{};
+		int n = (int)spec.historyMHz->Count();
+		if(n > 60) n = 60;
+		for(int i = 0; i < n; ++i) samples[i] = spec.historyMHz->GetOldestToNewest((size_t)i);
+
+		RECT rc{ 1, 1, size - 1, size - 1 };
+		SparklineStyle style;
+		DrawAreaSparklineGdiPlus(hdc, rc, samples, n, style);
+	}
+
 	auto rgb = spec.overBase ? RGB(230, 40, 40) : RGB(40, 200, 80);
 	SetTextColor(hdc, rgb);
 
@@ -206,11 +224,12 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 	LOGFONTW baseLf{};
 	GetObjectW(hFont_, sizeof(baseLf), &baseLf);
 
+	// Keep the original "maximize font size within icon" approach.
 	const auto targetW = (int)(size * 0.98);
 	const auto targetH = (int)(size * 0.92);
 
 	SIZE ext{};
-	const int bestH = FindBestFontHeight(hdc, text, baseLf.lfFaceName, FW_BLACK, 10, 90, targetW, targetH, ext);
+	const int bestH = FindBestFontHeight(hdc, text, baseLf.lfFaceName, FW_BLACK, 6, 30, targetW, targetH, ext);
 
 	auto finalFont = CreateFontForTest(bestH, baseLf.lfFaceName, FW_BLACK);
 	auto oldFont = (HFONT)SelectObject(hdc, finalFont);
@@ -223,6 +242,10 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 	if(x < 1) x = 1;
 	if(y < 1) y = 1;
 
+	// Slight shadow improves readability over the plot.
+	SetTextColor(hdc, RGB(0, 0, 0));
+	TextOutW(hdc, x + 1, y + 1, text, (int)wcslen(text));
+	SetTextColor(hdc, rgb);
 	TextOutW(hdc, x, y, text, (int)wcslen(text));
 
 	SelectObject(hdc, oldFont);
@@ -233,14 +256,20 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 
 	auto* px = (unsigned int*)bits;
 	const auto n = (size_t)size * (size_t)size;
+
+// Preserve per-pixel alpha produced by GDI+ (sparkline), but fix up pixels drawn via GDI (text),
+// which typically leave alpha = 0. We only force alpha to 0xFF when the pixel has RGB != 0 AND alpha == 0.
 	for(size_t i = 0; i < n; i++)
 	{
 		auto v = px[i];
-		if((v & 0x00FFFFFFu) != 0)
+		if(((v & 0x00FFFFFFu) != 0) && ((v & 0xFF000000u) == 0))
 			px[i] = v | 0xFF000000u;
 	}
-
-	HBITMAP hbmMask = CreateBitmap(size, size, 1, 1, nullptr);
+// Build a fully-transparent AND mask (all 1s). This matters on some systems
+	// where the mask is still consulted even for 32-bit icons.
+	const auto maskStrideBytes = ((size + 31) / 32) * 4;
+	std::vector<unsigned char> maskBits((size_t)maskStrideBytes * (size_t)size, 0xFF);
+	HBITMAP hbmMask = CreateBitmap(size, size, 1, 1, maskBits.data());
 	if(!hbmMask) { DeleteObject(hbm); return nullptr; }
 
 	ICONINFO ii{};
