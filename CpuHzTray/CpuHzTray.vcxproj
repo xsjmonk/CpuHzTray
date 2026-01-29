@@ -55,6 +55,9 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>wbemuuid.lib;gdiplus.lib;PowrProf.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command></Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
 
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -77,6 +80,9 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>wbemuuid.lib;gdiplus.lib;PowrProf.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command></Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
 
   <ItemGroup>
@@ -91,6 +97,7 @@
     <ClInclude Include="IconRenderer.h" />
     <ClInclude Include="HistoryBuffer.h" />
     <ClInclude Include="SparklineRenderer.h" />
+    <ClInclude Include="resource.h" />
     <ClInclude Include="TrayApp.h" />
   </ItemGroup>
 
@@ -100,7 +107,7 @@
 
   <ItemGroup>
     <None Include="app.ico" />
-    <None Include="Fonts\DejaVuSansMono.ttf" />
+    <None Include="Fonts\UniversCnBold.ttf" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

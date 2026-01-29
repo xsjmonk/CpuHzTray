@@ -2,6 +2,8 @@
 
 #include "SparklineRenderer.h"
 
+#include "resource.h"
+
 #include <windows.h>
 #include <wingdi.h>
 
@@ -10,42 +12,6 @@
 #include <string>
 #include <vector>
 
-
-
-static std::wstring GetExeDir()
-{
-	wchar_t path[MAX_PATH]{};
-	auto n = GetModuleFileNameW(nullptr, path, MAX_PATH);
-	if(n == 0 || n >= MAX_PATH) return L"";
-
-	std::wstring p(path);
-	auto pos = p.find_last_of(L"\\/");
-	if(pos == std::wstring::npos) return L"";
-	return p.substr(0, pos);
-}
-
-static std::vector<unsigned char> ReadAllBytes(const std::wstring& path)
-{
-	std::vector<unsigned char> data;
-
-	auto h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if(h == INVALID_HANDLE_VALUE) return data;
-
-	LARGE_INTEGER size{};
-	if(!GetFileSizeEx(h, &size) || size.QuadPart <= 0 || size.QuadPart > 50ll * 1024ll * 1024ll)
-	{
-		CloseHandle(h);
-		return data;
-	}
-
-	data.resize((size_t)size.QuadPart);
-	DWORD read = 0;
-	if(!ReadFile(h, data.data(), (DWORD)data.size(), &read, nullptr) || read != (DWORD)data.size())
-		data.clear();
-
-	CloseHandle(h);
-	return data;
-}
 
 static void FormatText(double ghz, wchar_t out[16])
 {
@@ -121,19 +87,26 @@ IconRenderer::~IconRenderer()
 	if(fontMemHandle_) { RemoveFontMemResourceEx(fontMemHandle_); fontMemHandle_ = nullptr; }
 }
 
-bool IconRenderer::LoadFontFromFile() const
+bool IconRenderer::LoadFontFromResource() const
 {
-	auto dir = GetExeDir();
-	if(dir.empty()) return false;
+	// Load the font bytes from the exe's RCDATA resource.
+	auto hMod = GetModuleHandleW(nullptr);
+	if(!hMod) return false;
 
-	auto fontPath = dir + L"\\Fonts\\UniversCnRg.ttf";
-	if(GetFileAttributesW(fontPath.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+	HRSRC hrsrc = FindResourceW(hMod, MAKEINTRESOURCEW(IDR_FONT_UNIVERSCNBOLD), RT_RCDATA);
+	if(!hrsrc) return false;
 
-	auto bytes = ReadAllBytes(fontPath);
-	if(bytes.empty()) return false;
+	DWORD size = SizeofResource(hMod, hrsrc);
+	if(size == 0) return false;
+
+	HGLOBAL hglob = LoadResource(hMod, hrsrc);
+	if(!hglob) return false;
+
+	void* data = LockResource(hglob);
+	if(!data) return false;
 
 	DWORD nFonts = 0;
-	fontMemHandle_ = AddFontMemResourceEx(bytes.data(), (DWORD)bytes.size(), nullptr, &nFonts);
+	fontMemHandle_ = AddFontMemResourceEx(data, size, nullptr, &nFonts);
 	return fontMemHandle_ != nullptr;
 }
 
@@ -142,7 +115,7 @@ void IconRenderer::EnsureInit() const
 	if(initialized_) return;
 	initialized_ = true;
 
-	LoadFontFromFile();
+	LoadFontFromResource();
 
 	LOGFONTW lf{};
 	lf.lfHeight = -44;
@@ -152,12 +125,13 @@ void IconRenderer::EnsureInit() const
 	lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
 	lf.lfPitchAndFamily = DEFAULT_PITCH;
 
-	wcscpy_s(lf.lfFaceName, L"Univers");
+	// Internal family name from UniversCnBold.ttf: "Univers Condensed" (Subfamily: Bold)
+	wcscpy_s(lf.lfFaceName, L"Univers Condensed");
 	hFont_ = CreateFontIndirectW(&lf);
 
 	if(!hFont_)
 	{
-		wcscpy_s(lf.lfFaceName, L"Univers LT Std");
+		wcscpy_s(lf.lfFaceName, L"Univers");
 		hFont_ = CreateFontIndirectW(&lf);
 	}
 
@@ -215,7 +189,10 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 		DrawAreaSparklineGdiPlus(hdc, rc, samples, n, style);
 	}
 
-	auto rgb = spec.overBase ? RGB(230, 40, 40) : RGB(40, 200, 80);
+	// Text colors are provided via spec variables.
+	const auto rgbNormal = spec.textRgbNormal;
+	const auto rgbOver = spec.textRgbOver;
+	auto rgb = spec.overBase ? rgbOver : rgbNormal;
 	SetTextColor(hdc, rgb);
 
 	wchar_t text[16]{};

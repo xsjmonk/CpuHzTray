@@ -12,8 +12,9 @@ struct SparklineStyle
 	// Alpha is applied uniformly to the entire plot (fill + outline + dot).
 	BYTE alpha = 250;
 
-	COLORREF topRgb = RGB(0xD8, 0xE8, 0xFF);
-	COLORREF bottomRgb = RGB(0x14, 0x75, 0xFF);
+	//COLORREF topRgb = RGB(0xCE, 0xE8, 0xFF);
+	COLORREF topRgb = RGB(0x14, 0x75, 0xFF);
+	COLORREF bottomRgb = RGB(0xA5, 0xC9, 0xFF);
 
 	// Outline/dot use bottom color (with same alpha)
 	int outlineWidth = 1;

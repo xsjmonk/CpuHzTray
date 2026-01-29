@@ -46,6 +46,9 @@
     <ClInclude Include="SparklineRenderer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 
   <ItemGroup>
@@ -55,10 +58,7 @@
     <None Include="app.ico">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="Fonts\UniversCnRg.ttf">
-      <Filter>Resource Files</Filter>
-    </None>
-    <None Include="Fonts\DejaVuSansMono.ttf">
+    <None Include="Fonts\UniversCnBold.ttf">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>

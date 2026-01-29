@@ -153,9 +153,9 @@ const int left = plotRc.X;
 // NO SetInterpolationColors call
 
 
-	Gdiplus::Color colors[3] = { cTop, cTop, cBot };
+	/*Gdiplus::Color colors[3] = { cTop, cTop, cBot };
 	Gdiplus::REAL positions[3] = { 0.0f, 0.6667f, 1.0f };
-	fillBrush.SetInterpolationColors(colors, positions, 3);
+	fillBrush.SetInterpolationColors(colors, positions, 3);*/
 
 	g.FillPath(&fillBrush, &path);
 	g.ResetClip();

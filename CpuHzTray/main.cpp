@@ -31,18 +31,24 @@ static void UpdateTrayIcon(HWND hwnd)
 	if(reading.ok)
 		g_historyMHz.Push(reading.currentMHz);
 
+	// Text colors (explicit variables)
+	// Text colors are part of IconSpec defaults. Keep them there so changing
+	// IconSpec is sufficient (no need to modify the main loop).
+
 	IconSpec spec{};
 	if(reading.ok)
 	{
 		spec.ghz = ToGhz(reading.currentMHz);
 		spec.overBase = (reading.baseMHz > 0) ? (reading.currentMHz > reading.baseMHz) : false;
 		spec.historyMHz = &g_historyMHz;
+		// Keep spec.textRgbNormal / spec.textRgbOver as-is.
 	}
 	else
 	{
 		spec.ghz = 0;
 		spec.overBase = false;
 		spec.historyMHz = nullptr;
+		// Keep spec.textRgbNormal / spec.textRgbOver as-is.
 	}
 
 	HICON next = g_renderer.Render(spec);
