@@ -346,9 +346,8 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 		g.ResetClip();
 		g.SetClip(Gdiplus::Rect(0, 0, size, size));
 		g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-		g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
-		// Use crisp grid-fit for very small pixel fonts; otherwise allow AA for readability.
-		g.SetTextRenderingHint(Gdiplus::TextRenderingHintSingleBitPerPixelGridFit);
+		g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+		g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
 
 		// Use embedded font only. No fallback.
 		Gdiplus::FontFamily ff(kEmbeddedFontFamilyName, pfc);
@@ -372,9 +371,7 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 			path.AddString(t, (INT)wcslen(t), &ff, Gdiplus::FontStyleBold, (Gdiplus::REAL)em, Gdiplus::PointF(0, 0), &fmt);
 			outB = Gdiplus::RectF();
 			path.GetBounds(&outB);
-			const float padX = 1.0f;
-			const float padY = 1.0f;
-			return (outB.Width + padX * 2.0f) <= (float)targetW && (outB.Height + padY * 2.0f) <= (float)targetH;
+			return outB.Width <= (float)targetW && outB.Height <= (float)targetH;
 		};
 
 		// Compute a stable text size only once per (iconSize, font family).
@@ -414,26 +411,29 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 		buildBoundsFor(text, best, bestB);
 
 		// Final hinting based on chosen size.
-		g.SetTextRenderingHint((best <= 12)
-			? Gdiplus::TextRenderingHintSingleBitPerPixelGridFit
-			: Gdiplus::TextRenderingHintAntiAliasGridFit);
+		g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
 
 		// Place using the *tight glyph bounds* within the BOTTOM text region.
 		// We center the tight glyph box vertically inside the bottom region to avoid
 		// the "missing a couple of pixels" clipping caused by hinting/overhang.
 		const float x = (float)textRc.left + ((float)targetW - bestB.Width) / 2.0f - bestB.X;
 		const float y = (float)textRc.top + ((float)targetH - bestB.Height) / 2.0f - bestB.Y;
+		// Snap to whole pixels to avoid per-frame hinting jitter/jaggies when the text changes.
+		const float xs = (float)std::lround(x);
+		const float ys = (float)std::lround(y);
 
 		Gdiplus::GraphicsPath path;
 		Gdiplus::StringFormat fmt(Gdiplus::StringFormat::GenericTypographic());
 		fmt.SetFormatFlags(fmt.GetFormatFlags() | Gdiplus::StringFormatFlagsNoWrap);
-		const int style = (best <= 12) ? Gdiplus::FontStyleRegular : Gdiplus::FontStyleBold;
+		const int style = Gdiplus::FontStyleBold;
 		path.AddString(text, (INT)wcslen(text), &ff, style, (Gdiplus::REAL)best, Gdiplus::PointF(0, 0), &fmt);
 		Gdiplus::Matrix m;
-		m.Translate(x, y);
+		m.Translate(xs, ys);
 		path.Transform(&m);
 
 		Gdiplus::SolidBrush brush(Gdiplus::Color(255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)));
+		// Use SourceCopy so anti-aliased edge pixels don't blend with underlying plot pixels (prevents bluish/gray tinting).
+		g.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
 		g.FillPath(&brush, &path);
 	}
 	SelectObject(hdc, oldBmp);
