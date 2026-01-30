@@ -346,8 +346,8 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 		g.ResetClip();
 		g.SetClip(Gdiplus::Rect(0, 0, size, size));
 		g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-		g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-		g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+		g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+		g.SetTextRenderingHint(Gdiplus::TextRenderingHintSingleBitPerPixelGridFit);
 
 		// Use embedded font only. No fallback.
 		Gdiplus::FontFamily ff(kEmbeddedFontFamilyName, pfc);
@@ -411,7 +411,7 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 		buildBoundsFor(text, best, bestB);
 
 		// Final hinting based on chosen size.
-		g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+		g.SetTextRenderingHint(Gdiplus::TextRenderingHintSingleBitPerPixelGridFit);
 
 		// Place using the *tight glyph bounds* within the BOTTOM text region.
 		// We center the tight glyph box vertically inside the bottom region to avoid
@@ -452,11 +452,11 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 			px[i] = v | 0xFF000000u;
 	}
 
-// IMPORTANT: The tray icon pipeline expects *premultiplied* alpha for 32-bit icons.
-// GDI+ produces straight-alpha RGB for anti-aliased edges. If we hand straight-alpha
-// pixels to CreateIconIndirect, Windows can treat them as premultiplied and you get
-// gray halos around glyph edges.
-// Fix: premultiply RGB by A for all pixels with 0 < A < 255.
+	// IMPORTANT: The tray icon pipeline expects *premultiplied* alpha for 32-bit icons.
+	// GDI+ produces straight-alpha RGB for anti-aliased edges. If we hand straight-alpha
+	// pixels to CreateIconIndirect, Windows can treat them as premultiplied and you get
+	// gray halos around glyph edges.
+	// Fix: premultiply RGB by A for all pixels with 0 < A < 255.
 	for(size_t i = 0; i < n; i++)
 	{
 		auto v = px[i];
@@ -474,7 +474,6 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 			px[i] = (a << 24) | (r << 16) | (g << 8) | b;
 		}
 	}
-
 // Build a fully-transparent AND mask (all 1s). This matters on some systems
 	// where the mask is still consulted even for 32-bit icons.
 	const auto maskStrideBytes = ((size + 31) / 32) * 4;
