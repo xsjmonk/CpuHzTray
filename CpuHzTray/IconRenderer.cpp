@@ -1,8 +1,10 @@
 #include "IconRenderer.h"
-
 #include "SparklineRenderer.h"
-
 #include "resource.h"
+
+
+// Embedded font settings (easy to edit)
+static const wchar_t* kEmbeddedFontFile = L"Fonts\\embedded.ttf";
 
 #include <windows.h>
 #include <wingdi.h>
@@ -11,12 +13,69 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <memory>
+#include <stdexcept>
 
+#include <objidl.h>
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
 
+// GDI+ needs a PrivateFontCollection to use an embedded font reliably.
+// IMPORTANT:
+// - Font bytes must remain alive for the whole process lifetime (some fonts access data lazily).
+// - Do NOT enumerate FontFamily objects into STL containers.
+static bool EnsureEmbeddedFont(Gdiplus::PrivateFontCollection*& outPfc)
+{
+	static bool inited = false;
+	static bool ok = false;
+	static Gdiplus::PrivateFontCollection pfc;
+	static std::vector<BYTE> fontBytes; // must outlive the process
+
+	if(inited)
+	{
+		outPfc = ok ? &pfc : nullptr;
+		return ok;
+	}
+	inited = true;
+
+	auto hMod = GetModuleHandleW(nullptr);
+	if(!hMod) { ok = false; outPfc = nullptr; return false; }
+
+	HRSRC hrsrc = FindResourceW(hMod, MAKEINTRESOURCEW(IDR_FONT_EMBEDDED), RT_RCDATA);
+	if(!hrsrc) { ok = false; outPfc = nullptr; return false; }
+
+	DWORD sz = SizeofResource(hMod, hrsrc);
+	if(sz == 0) { ok = false; outPfc = nullptr; return false; }
+
+	HGLOBAL hg = LoadResource(hMod, hrsrc);
+	if(!hg) { ok = false; outPfc = nullptr; return false; }
+
+	void* mem = LockResource(hg);
+	if(!mem) { ok = false; outPfc = nullptr; return false; }
+
+	fontBytes.resize(sz);
+	memcpy(fontBytes.data(), mem, sz);
+
+	pfc.AddMemoryFont(fontBytes.data(), (INT)fontBytes.size());
+	ok = (pfc.GetFamilyCount() > 0);
+	outPfc = ok ? &pfc : nullptr;
+	return ok;
+}
+
+void IconRenderer::SetFontError(const std::wstring& msg) const
+{
+	if(fontError_.empty())
+		fontError_ = msg;
+}
+
+const wchar_t* IconRenderer::GetFontError() const
+{
+	return fontError_.empty() ? nullptr : fontError_.c_str();
+}
 static void FormatText(double ghz, wchar_t out[16])
 {
 	auto v = std::max(0.0, ghz);
-	swprintf_s(out, 16, L"%.1f", v);
+	swprintf_s(out, 16, L"%.2f", v);
 }
 
 static HFONT CreateFontForTest(int heightPx, const wchar_t* faceName, int weight)
@@ -24,6 +83,7 @@ static HFONT CreateFontForTest(int heightPx, const wchar_t* faceName, int weight
 	LOGFONTW lf{};
 	lf.lfHeight = -heightPx;
 	lf.lfWeight = weight;
+	// Use non-antialiased text for pixel fonts and to avoid color fringes on transparent icons.
 	lf.lfQuality = NONANTIALIASED_QUALITY;
 	lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
 	lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
@@ -41,6 +101,11 @@ static bool MeasureFits(HDC hdc, const wchar_t* text, int heightPx, const wchar_
 
 	SIZE ext{};
 	GetTextExtentPoint32W(hdc, text, (int)wcslen(text), &ext);
+	TEXTMETRICW tm{};
+	GetTextMetricsW(hdc, &tm);
+	// Add safety for glyph overhang/AA so we never clip the last digit.
+	ext.cx += (int)tm.tmOverhang + 1;
+	ext.cy += 1;
 
 	SelectObject(hdc, old);
 	DeleteObject(hFont);
@@ -93,7 +158,7 @@ bool IconRenderer::LoadFontFromResource() const
 	auto hMod = GetModuleHandleW(nullptr);
 	if(!hMod) return false;
 
-	HRSRC hrsrc = FindResourceW(hMod, MAKEINTRESOURCEW(IDR_FONT_UNIVERSCNBOLD), RT_RCDATA);
+	HRSRC hrsrc = FindResourceW(hMod, MAKEINTRESOURCEW(IDR_FONT_EMBEDDED), RT_RCDATA);
 	if(!hrsrc) return false;
 
 	DWORD size = SizeofResource(hMod, hrsrc);
@@ -107,49 +172,97 @@ bool IconRenderer::LoadFontFromResource() const
 
 	DWORD nFonts = 0;
 	fontMemHandle_ = AddFontMemResourceEx(data, size, nullptr, &nFonts);
-	return fontMemHandle_ != nullptr;
+	if(!fontMemHandle_) return false;
+	return nFonts > 0;
 }
 
 void IconRenderer::EnsureInit() const
 {
 	if(initialized_) return;
 	initialized_ = true;
+	fontError_.clear();
 
-	LoadFontFromResource();
+	// Step 6.1: Explicit validation with explicit errors (no guessing / no fallback).
+	// 1) RCDATA exists and non-empty.
+	// 2) AddFontMemResourceEx registers at least one font.
+	// 3) The configured family name exists in the embedded font.
+	// 4) CreateFontIndirectW succeeds for that family name.
+	{
+		auto hMod = GetModuleHandleW(nullptr);
+		if(!hMod) { SetFontError(L"GetModuleHandleW failed."); return; }
+		HRSRC hrsrc = FindResourceW(hMod, MAKEINTRESOURCEW(IDR_FONT_EMBEDDED), RT_RCDATA);
+		if(!hrsrc) { SetFontError(L"Embedded font RCDATA not found (IDR_FONT_EMBEDDED / RT_RCDATA). Ensure app.rc embeds Fonts\\embedded.ttf as IDR_FONT_EMBEDDED."); return; }
+		DWORD sz = SizeofResource(hMod, hrsrc);
+		if(sz == 0) { SetFontError(L"Embedded font RCDATA found but size is 0 bytes (IDR_FONT_EMBEDDED). The embedded.ttf may be missing or empty."); return; }
+	}
+
+	if(!LoadFontFromResource())
+	{
+		SetFontError(L"AddFontMemResourceEx failed or returned 0 fonts. Embedded font bytes were loaded but no fonts were registered.");
+		return;
+	}
 
 	LOGFONTW lf{};
 	lf.lfHeight = -44;
 	lf.lfWeight = FW_BLACK;
+	// Pixel font: keep it crisp (no AA) to avoid fringes and bold-looking strokes.
 	lf.lfQuality = NONANTIALIASED_QUALITY;
 	lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
 	lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
-	lf.lfPitchAndFamily = DEFAULT_PITCH;
+	lf.lfPitchAndFamily = DEFAULT_PITCH;	// Embedded font is required. Use the configured family name from header.
+	Gdiplus::PrivateFontCollection* pfc = nullptr;
+	if(!EnsureEmbeddedFont(pfc) || !pfc)
+	{
+		SetFontError(L"Embedded font bytes loaded but GDI+ PrivateFontCollection has 0 families. (AddMemoryFont produced no families.)");
+		return;
+	}
+	// Validate the configured family name against the embedded font.
+	{
+		Gdiplus::FontFamily ff(kEmbeddedFontFamilyName, pfc);
+		if(!ff.IsAvailable())
+		{
+			std::wstring msg = L"Embedded font family name not found inside embedded.ttf. Configured kEmbeddedFontFamilyName='";
+			msg += kEmbeddedFontFamilyName;
+			msg += L"'. Use font_name.ps1 to list the embedded font family name and update IconRenderer.h.";
+			SetFontError(msg);
+			return;
+		}
+	}
+	wcscpy_s(lf.lfFaceName, kEmbeddedFontFamilyName);
 
-	// Internal family name from UniversCnBold.ttf: "Univers Condensed" (Subfamily: Bold)
-	wcscpy_s(lf.lfFaceName, L"Univers Condensed");
 	hFont_ = CreateFontIndirectW(&lf);
 
 	if(!hFont_)
 	{
-		wcscpy_s(lf.lfFaceName, L"Univers");
-		hFont_ = CreateFontIndirectW(&lf);
-	}
-
-	if(!hFont_)
-	{
-		wcscpy_s(lf.lfFaceName, L"Segoe UI");
-		lf.lfWeight = FW_BLACK;
-		lf.lfQuality = ANTIALIASED_QUALITY;
-		hFont_ = CreateFontIndirectW(&lf);
+		// Do not fallback: embedded font must be available (correct family name).
+		std::wstring msg = L"CreateFontIndirectW failed for embedded font family name '";
+		msg += kEmbeddedFontFamilyName;
+		msg += L"'.";
+		SetFontError(msg);
+		return;
 	}
 }
 
 HICON IconRenderer::Render(const IconSpec& spec) const
 {
 	EnsureInit();
+	if(!hFont_)
+		return nullptr;
+
+	// Use embedded font only. No fallback.
+	Gdiplus::PrivateFontCollection* pfc = nullptr;
+	if(!EnsureEmbeddedFont(pfc) || !pfc)
+	{
+		SetFontError(L"Embedded font not available at render time (PrivateFontCollection empty)." );
+		return nullptr;
+	}
 
 	// Render at native tray size.
-	const int size = 32;
+	int size = GetSystemMetrics(SM_CXSMICON);
+	int sizeY = GetSystemMetrics(SM_CYSMICON);
+	if(sizeY > size) size = sizeY;
+	if(size <= 0) size = 16;
+	if(size < 16) size = 16;
 
 	BITMAPV5HEADER bi{};
 	bi.bV5Size = sizeof(bi);
@@ -174,62 +287,158 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 	HDC hdc = CreateCompatibleDC(nullptr);
 	auto oldBmp = (HBITMAP)SelectObject(hdc, hbm);
 
-	SetBkMode(hdc, TRANSPARENT);
+	// Draw sparkline first (GDI+ inside SparklineRenderer), then overlay text (GDI+ for correct alpha).
+	// Layout: top region is plot-only, bottom region is text-only.
+	// 32px icon => bottom ~0.66 for text, top ~0.34 for plot.
+		const int splitY = (int)std::lround(size * kPlotHeightRatio);
+		int splitYClamped = splitY;
+	{
+		int minPlot = 4;
+		int maxPlot = size - 6; // keep at least 6px for text
+		if(splitYClamped < minPlot) splitYClamped = minPlot;
+		if(splitYClamped > maxPlot) splitYClamped = maxPlot;
+	}
 
-	// Draw sparkline first (GDI+ inside SparklineRenderer), then overlay text (GDI).
+	RECT plotRc{ 0, 0, size, splitYClamped };
+	// Bottom region is for text only (as per your current two-section layout).
+	RECT textRc{ 0, splitYClamped, size, size };
+
 	if(spec.historyMHz && spec.historyMHz->Count() >= 2)
 	{
 		double samples[60]{};
 		int n = (int)spec.historyMHz->Count();
 		if(n > 60) n = 60;
 		for(int i = 0; i < n; ++i) samples[i] = spec.historyMHz->GetOldestToNewest((size_t)i);
-
-		RECT rc{ 1, 1, size - 1, size - 1 };
 		SparklineStyle style;
-		DrawAreaSparklineGdiPlus(hdc, rc, samples, n, style);
+		// Scale stroke width for the actual tray icon size (often 16x16/20x20).
+		// Keep it thin but readable.
+		const float scale = (float)size / 32.0f;
+		style.lineWidth = std::max(1.2f, 1.6f * scale);
+		DrawAreaSparklineGdiPlus(hdc, plotRc, samples, n, spec.baseMHz, style);
 	}
 
-	// Text colors are provided via spec variables.
-	const auto rgbNormal = spec.textRgbNormal;
-	const auto rgbOver = spec.textRgbOver;
-	auto rgb = spec.overBase ? rgbOver : rgbNormal;
-	SetTextColor(hdc, rgb);
+	// Text color scheme:
+	// - Below base: 1475FF
+	// - Above base: AF1E2D
+	COLORREF rgb = spec.overBase ? spec.textRgbOver : spec.textRgbBelow;
 
 	wchar_t text[16]{};
 	FormatText(spec.ghz, text);
 
-	LOGFONTW baseLf{};
-	GetObjectW(hFont_, sizeof(baseLf), &baseLf);
+	// Text size is cached per (iconSize, embedded font family) to avoid per-tick size jitter.
+	// We safely assume the display format is always like "3.71" (4 chars).
+	// Cache is computed using a worst-case width sample "8.88" (same length, typically widest digits).
+	static int s_cachedIconSize = 0;
+	static int s_cachedEm = 0;
+	static Gdiplus::RectF s_cachedBounds{};
+	static std::wstring s_cachedFamily;
 
-	// Keep the original "maximize font size within icon" approach.
-	const auto targetW = (int)(size * 0.98);
-	const auto targetH = (int)(size * 0.92);
 
-	SIZE ext{};
-	const int bestH = FindBestFontHeight(hdc, text, baseLf.lfFaceName, FW_BLACK, 6, 30, targetW, targetH, ext);
+	const auto targetW = (textRc.right - textRc.left);
+	const auto targetH = (textRc.bottom - textRc.top);
+	// Font sizing for the icon uses GDI+ tight glyph bounds below; do not mix
+	// with GDI metrics here (different fonts/rendering modes can disagree).
 
-	auto finalFont = CreateFontForTest(bestH, baseLf.lfFaceName, FW_BLACK);
-	auto oldFont = (HFONT)SelectObject(hdc, finalFont);
+	// Draw text LAST (top-most). Use GDI+ path so we can measure tight glyph bounds
+	// and place the glyph box at the icon bottom with a 1px margin.
+	{
+		Gdiplus::Graphics g(hdc);
+		g.ResetClip();
+		g.SetClip(Gdiplus::Rect(0, 0, size, size));
+		g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+		g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+		// Use crisp grid-fit for very small pixel fonts; otherwise allow AA for readability.
+		g.SetTextRenderingHint(Gdiplus::TextRenderingHintSingleBitPerPixelGridFit);
 
-	GetTextExtentPoint32W(hdc, text, (int)wcslen(text), &ext);
+		// Use embedded font only. No fallback.
+		Gdiplus::FontFamily ff(kEmbeddedFontFamilyName, pfc);
+		if(!ff.IsAvailable())
+		{
+			std::wstring msg = L"Embedded font family name not found at render time. Configured kEmbeddedFontFamilyName='";
+			msg += kEmbeddedFontFamilyName;
+			msg += L"'.";
+			SetFontError(msg);
+			SelectObject(hdc, oldBmp);
+			DeleteDC(hdc);
+			DeleteObject(hbm);
+			return nullptr;
+		}
 
-	int x = (size - ext.cx) / 2;
-	int y = (size - ext.cy) / 2;
+		auto buildBoundsFor = [&](const wchar_t* t, int em, Gdiplus::RectF& outB)->bool
+		{
+			Gdiplus::GraphicsPath path;
+			Gdiplus::StringFormat fmt(Gdiplus::StringFormat::GenericTypographic());
+			fmt.SetFormatFlags(fmt.GetFormatFlags() | Gdiplus::StringFormatFlagsNoWrap);
+			path.AddString(t, (INT)wcslen(t), &ff, Gdiplus::FontStyleBold, (Gdiplus::REAL)em, Gdiplus::PointF(0, 0), &fmt);
+			outB = Gdiplus::RectF();
+			path.GetBounds(&outB);
+			const float padX = 1.0f;
+			const float padY = 1.0f;
+			return (outB.Width + padX * 2.0f) <= (float)targetW && (outB.Height + padY * 2.0f) <= (float)targetH;
+		};
 
-	if(x < 1) x = 1;
-	if(y < 1) y = 1;
+		// Compute a stable text size only once per (iconSize, font family).
+		// Use a worst-case sample for width so the cached size never exceeds the icon.
+		const wchar_t* sampleText = L"8.88";
+		// Cache key must include the text box height (because your icon is split into 2 vertical areas).
+		static int s_cachedTextH = 0;
+		if(s_cachedIconSize != size || s_cachedTextH != targetH || s_cachedFamily != kEmbeddedFontFamilyName || s_cachedEm <= 0)
+		{
+			int lo = 6, hi = 400, best = 6;
+			Gdiplus::RectF bestB{};
+			while(lo <= hi)
+			{
+				int mid = (lo + hi) / 2;
+				Gdiplus::RectF b{};
+				if(buildBoundsFor(sampleText, mid, b))
+				{
+					best = mid;
+					bestB = b;
+					lo = mid + 1;
+				}
+				else
+				{
+					hi = mid - 1;
+				}
+			}
+			s_cachedIconSize = size;
+			s_cachedTextH = targetH;
+			s_cachedFamily = kEmbeddedFontFamilyName;
+			s_cachedEm = best;
+			s_cachedBounds = bestB;
+		}
 
-	// Slight shadow improves readability over the plot.
-	SetTextColor(hdc, RGB(0, 0, 0));
-	TextOutW(hdc, x + 1, y + 1, text, (int)wcslen(text));
-	SetTextColor(hdc, rgb);
-	TextOutW(hdc, x, y, text, (int)wcslen(text));
+		int best = s_cachedEm;
+		Gdiplus::RectF bestB{};
+		// Measure current text bounds at the cached size (cheap) for accurate placement.
+		buildBoundsFor(text, best, bestB);
 
-	SelectObject(hdc, oldFont);
+		// Final hinting based on chosen size.
+		g.SetTextRenderingHint((best <= 12)
+			? Gdiplus::TextRenderingHintSingleBitPerPixelGridFit
+			: Gdiplus::TextRenderingHintAntiAliasGridFit);
+
+		// Place using the *tight glyph bounds* within the BOTTOM text region.
+		// We center the tight glyph box vertically inside the bottom region to avoid
+		// the "missing a couple of pixels" clipping caused by hinting/overhang.
+		const float x = (float)textRc.left + ((float)targetW - bestB.Width) / 2.0f - bestB.X;
+		const float y = (float)textRc.top + ((float)targetH - bestB.Height) / 2.0f - bestB.Y;
+
+		Gdiplus::GraphicsPath path;
+		Gdiplus::StringFormat fmt(Gdiplus::StringFormat::GenericTypographic());
+		fmt.SetFormatFlags(fmt.GetFormatFlags() | Gdiplus::StringFormatFlagsNoWrap);
+		const int style = (best <= 12) ? Gdiplus::FontStyleRegular : Gdiplus::FontStyleBold;
+		path.AddString(text, (INT)wcslen(text), &ff, style, (Gdiplus::REAL)best, Gdiplus::PointF(0, 0), &fmt);
+		Gdiplus::Matrix m;
+		m.Translate(x, y);
+		path.Transform(&m);
+
+		Gdiplus::SolidBrush brush(Gdiplus::Color(255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)));
+		g.FillPath(&brush, &path);
+	}
 	SelectObject(hdc, oldBmp);
 	DeleteDC(hdc);
 
-	DeleteObject(finalFont);
 
 	auto* px = (unsigned int*)bits;
 	const auto n = (size_t)size * (size_t)size;

@@ -19,7 +19,7 @@ static HICON g_hIcon = nullptr;
 
 static CpuFrequency g_cpu;
 static IconRenderer g_renderer;
-static RingBufferD<60> g_historyMHz;
+static RingBufferD<30> g_historyMHz;
 
 static ULONG_PTR g_gdiplusToken = 0;
 
@@ -39,6 +39,7 @@ static void UpdateTrayIcon(HWND hwnd)
 	if(reading.ok)
 	{
 		spec.ghz = ToGhz(reading.currentMHz);
+		spec.baseMHz = reading.baseMHz;
 		spec.overBase = (reading.baseMHz > 0) ? (reading.currentMHz > reading.baseMHz) : false;
 		spec.historyMHz = &g_historyMHz;
 		// Keep spec.textRgbNormal / spec.textRgbOver as-is.
@@ -46,13 +47,28 @@ static void UpdateTrayIcon(HWND hwnd)
 	else
 	{
 		spec.ghz = 0;
+		spec.baseMHz = 0;
 		spec.overBase = false;
 		spec.historyMHz = nullptr;
 		// Keep spec.textRgbNormal / spec.textRgbOver as-is.
 	}
 
 	HICON next = g_renderer.Render(spec);
-	if(!next) return;
+	if(!next)
+	{
+		static bool s_shown = false;
+		if(!s_shown)
+		{
+			s_shown = true;
+			auto err = g_renderer.GetFontError();
+			if(err && *err)
+			{
+				MessageBoxW(hwnd, err, L"CpuHzTray - Embedded font error", MB_OK | MB_ICONERROR);
+				DestroyWindow(hwnd);
+			}
+		}
+		return;
+	}
 
 	// Update tooltip
 	std::wstringstream ss;
@@ -167,7 +183,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 	g_nid.uCallbackMessage = WMAPP_TRAY;
 
 	// Initial icon
-	g_hIcon = g_renderer.Render(IconSpec{ 0, false });
+	g_hIcon = g_renderer.Render(IconSpec{});
+	if(!g_hIcon)
+	{
+		auto err = g_renderer.GetFontError();
+		if(err && *err)
+			MessageBoxW(nullptr, err, L"CpuHzTray - Embedded font error", MB_OK | MB_ICONERROR);
+		else
+			MessageBoxW(nullptr, L"Failed to render tray icon.", L"CpuHzTray", MB_OK | MB_ICONERROR);
+		return 1;
+	}
 	g_nid.hIcon = g_hIcon;
 	wcsncpy_s(g_nid.szTip, L"CPU Hz tray", _TRUNCATE);
 

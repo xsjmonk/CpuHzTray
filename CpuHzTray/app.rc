@@ -4,4 +4,4 @@
 1 ICON "app.ico"
 
 // Private font embedded into the exe (no deployment copy needed)
-IDR_FONT_UNIVERSCNBOLD RCDATA "Fonts\\UniversCnBold.ttf"
+IDR_FONT_EMBEDDED RCDATA "Fonts\embedded.ttf"
