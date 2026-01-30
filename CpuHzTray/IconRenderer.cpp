@@ -451,6 +451,30 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 		if(((v & 0x00FFFFFFu) != 0) && ((v & 0xFF000000u) == 0))
 			px[i] = v | 0xFF000000u;
 	}
+
+// IMPORTANT: The tray icon pipeline expects *premultiplied* alpha for 32-bit icons.
+// GDI+ produces straight-alpha RGB for anti-aliased edges. If we hand straight-alpha
+// pixels to CreateIconIndirect, Windows can treat them as premultiplied and you get
+// gray halos around glyph edges.
+// Fix: premultiply RGB by A for all pixels with 0 < A < 255.
+	for(size_t i = 0; i < n; i++)
+	{
+		auto v = px[i];
+		auto a = (unsigned int)((v >> 24) & 0xFFu);
+		if(a > 0 && a < 255)
+		{
+			auto r = (unsigned int)((v >> 16) & 0xFFu);
+			auto g = (unsigned int)((v >> 8) & 0xFFu);
+			auto b = (unsigned int)(v & 0xFFu);
+
+			r = (r * a + 127u) / 255u;
+			g = (g * a + 127u) / 255u;
+			b = (b * a + 127u) / 255u;
+
+			px[i] = (a << 24) | (r << 16) | (g << 8) | b;
+		}
+	}
+
 // Build a fully-transparent AND mask (all 1s). This matters on some systems
 	// where the mask is still consulted even for 32-bit icons.
 	const auto maskStrideBytes = ((size + 31) / 32) * 4;
