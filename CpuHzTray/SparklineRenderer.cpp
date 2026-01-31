@@ -58,8 +58,8 @@ void DrawAreaSparklineGdiPlus(
 	if(w <= 2 || h <= 2) return;
 
 	Gdiplus::Graphics g(hdc);
-	g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-	g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+	g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+	g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
 
 	Gdiplus::Rect plotRc(plotRcWin.left, plotRcWin.top, w, h);
 	g.SetClip(plotRc);
