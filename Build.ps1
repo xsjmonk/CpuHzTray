@@ -59,7 +59,7 @@ function Remove-GeneratedArtifacts {
         Remove-DirectoryTree -Path $directory.FullName
     }
 
-    $filePatterns = @("*.tlog", "*.lastbuildstate", "*.unsuccessfulbuild", "*.obj", "*.idb", "*.ilk", "*.pch")
+    $filePatterns = @("*.tlog", "*.lastbuildstate", "*.unsuccessfulbuild", "*.obj", "*.idb", "*.ilk", "*.pch", "*.pdb")
     foreach ($pattern in $filePatterns) {
         Get-ChildItem -Path $RootPath -File -Recurse -Force -Filter $pattern -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notlike "$buildDir*" } |
