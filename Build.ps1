@@ -28,6 +28,19 @@ function Remove-DirectoryTree {
     }
 }
 
+function Clear-DirectoryContents {
+    param(
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        return
+    }
+
+    Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 function Get-MSBuildPath {
     $msbuildCommand = Get-Command msbuild.exe -ErrorAction SilentlyContinue
     if ($msbuildCommand) {
@@ -73,8 +86,7 @@ if (-not (Test-Path $solutionPath)) {
 
 $msbuildPath = Get-MSBuildPath
 
-New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
-Get-ChildItem -Path $buildDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Clear-DirectoryContents -Path $buildDir
 
 Remove-DirectoryTree -Path $tempRoot
 
