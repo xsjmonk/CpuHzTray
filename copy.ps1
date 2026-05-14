@@ -131,5 +131,6 @@ Copy-SourceTree -RootPath $sourceRoot
 
 Compress-Archive -Path (Join-Path $stagingRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
 
-Write-Host "Copied source tree to: $stagingRoot"
-Write-Host "Created archive: $zipPath"
+Remove-DirectoryTree -Path $stagingRoot
+
+Write-Host "Copied source tree to archive: $zipPath"
