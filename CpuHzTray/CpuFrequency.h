@@ -5,8 +5,11 @@
 
 struct CpuReading
 {
-	double currentMHz = 0;
-	double baseMHz = 0;
+	double currentMHz = 0.0;
+	double avgMHz = 0.0;
+	double maxMHz = 0.0;
+	double baseMHz = 0.0;
+	int validCoreCount = 0;
 	bool ok = false;
 	std::wstring source;
 	long lastPdhStatus = 0;
@@ -27,12 +30,17 @@ private:
 	bool InitPdh();
 
 	double baseMHz_ = 0;
-	double lastGoodPerfPct_ = 0.0;
-	double lastGoodFreqMHz_ = 0.0;
+
+	double lastGoodAvgMHz_ = 0.0;
+	double lastGoodMaxMHz_ = 0.0;
+	int lastGoodValidCoreCount_ = 0;
+	std::wstring lastGoodSource_;
 
 	PDH_HQUERY query_ = nullptr;
-	PDH_HCOUNTER perfPctCounter_ = nullptr;
-	PDH_HCOUNTER freqMHzCounter_ = nullptr;
+	PDH_HCOUNTER perCoreFreqMHzCounter_ = nullptr;
+	PDH_HCOUNTER perCorePerfPctCounter_ = nullptr;
+	PDH_HCOUNTER totalPerfPctCounter_ = nullptr;
+	PDH_HCOUNTER totalFreqMHzCounter_ = nullptr;
 
 	long lastPdhStatus_ = 0;
 	unsigned long lastPdhCStatus_ = 0;

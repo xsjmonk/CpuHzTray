@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <vector>
 
 #include <pdhmsg.h>
 
@@ -42,6 +43,138 @@ static std::optional<double> TryReadMaxClockSpeedMHz(IWbemServices* svc)
 	return out;
 }
 
+namespace {
+
+// Returns false for nullptr, empty, exact _Total, or names ending with ,_Total.
+bool IsRealLogicalProcessorInstance(const wchar_t* name)
+{
+	if(!name || !*name)
+		return false;
+
+	if(_wcsicmp(name, L"_Total") == 0)
+		return false;
+
+	const wchar_t* lastComma = wcsrchr(name, L',');
+	if(lastComma && _wcsicmp(lastComma + 1, L"_Total") == 0)
+		return false;
+
+	return true;
+}
+
+// Pure helper: compute average and max from a list of per-core samples.
+struct CoreStats
+{
+	double avg = 0.0;
+	double max = 0.0;
+	int count = 0;
+};
+
+CoreStats ComputeCoreStats(const double* values, int count)
+{
+	CoreStats result;
+	double sum = 0.0;
+	for(int i = 0; i < count; ++i)
+	{
+		if(values[i] <= 0.0)
+			continue;
+		sum += values[i];
+		if(values[i] > result.max)
+			result.max = values[i];
+		++result.count;
+	}
+	if(result.count > 0)
+		result.avg = sum / result.count;
+	return result;
+}
+
+struct NamedSample
+{
+	const wchar_t* name;
+	double value;
+};
+
+struct NamedStats
+{
+	double avg = 0.0;
+	double max = 0.0;
+	int count = 0;
+};
+
+NamedStats ComputeNamedCoreStats(const NamedSample* samples, int count)
+{
+	NamedStats result;
+	double sum = 0.0;
+	for(int i = 0; i < count; ++i)
+	{
+		if(!IsRealLogicalProcessorInstance(samples[i].name))
+			continue;
+		if(samples[i].value <= 0.0)
+			continue;
+		sum += samples[i].value;
+		if(samples[i].value > result.max)
+			result.max = samples[i].value;
+		++result.count;
+	}
+	if(result.count > 0)
+		result.avg = sum / result.count;
+	return result;
+}
+
+bool RunSelfTests()
+{
+	// IsRealLogicalProcessorInstance tests
+	{
+		auto check = [](const wchar_t* n, bool expected) -> bool {
+			return IsRealLogicalProcessorInstance(n) == expected;
+		};
+		if(!check(L"_Total", false)) return false;
+		if(!check(L"0,_Total", false)) return false;
+		if(!check(L"1,_Total", false)) return false;
+		if(!check(L"0,0", true)) return false;
+		if(!check(L"0,1", true)) return false;
+		if(!check(L"1,0", true)) return false;
+		if(!check(L"3", true)) return false;
+		if(!check(L"", false)) return false;
+		if(!check(nullptr, false)) return false;
+	}
+
+	// ComputeCoreStats tests
+	{
+		double vals[] = {1000.0, 2000.0, 3000.0};
+		auto s = ComputeCoreStats(vals, 3);
+		if(s.avg != 2000.0 || s.max != 3000.0 || s.count != 3) return false;
+	}
+	{
+		double vals[] = {1000.0, 0.0, -5.0, 2000.0};
+		auto s = ComputeCoreStats(vals, 4);
+		if(s.avg != 1500.0 || s.max != 2000.0 || s.count != 2) return false;
+	}
+	{
+		double vals[] = {0.0, -1.0};
+		auto s = ComputeCoreStats(vals, 2);
+		if(s.count != 0) return false;
+	}
+	{
+		auto s = ComputeCoreStats(nullptr, 0);
+		if(s.count != 0) return false;
+	}
+
+	// ComputeNamedCoreStats with aggregate filtering.
+	{
+		NamedSample samples[] = {
+			{L"0,0", 1000.0},
+			{L"0,1", 2000.0},
+			{L"0,_Total", 5000.0},
+			{L"_Total", 6000.0},
+		};
+		auto s = ComputeNamedCoreStats(samples, 4);
+		if(s.avg != 1500.0 || s.max != 2000.0 || s.count != 2) return false;
+	}
+	return true;
+}
+
+}
+
 CpuFrequency::~CpuFrequency()
 {
 	if(query_)
@@ -49,14 +182,21 @@ CpuFrequency::~CpuFrequency()
 		PdhCloseQuery(query_);
 		query_ = nullptr;
 	}
-	perfPctCounter_ = nullptr;
-	freqMHzCounter_ = nullptr;
+	perCoreFreqMHzCounter_ = nullptr;
+	perCorePerfPctCounter_ = nullptr;
+	totalPerfPctCounter_ = nullptr;
+	totalFreqMHzCounter_ = nullptr;
 }
 
 bool CpuFrequency::Initialize()
 {
-	InitBaseWmi();  // best effort
-	InitPdh();      // required for perf% (and also provides a fallback base)
+	InitBaseWmi();
+	if(!InitPdh())
+		return false;
+
+	if(!RunSelfTests())
+		return false;
+
 	return true;
 }
 
@@ -113,30 +253,41 @@ bool CpuFrequency::InitPdh()
 	auto s = PdhOpenQueryW(nullptr, 0, &query_);
 	if(s != ERROR_SUCCESS || !query_) return false;
 
-	// Turbo-capable indicator (can exceed 100 on many systems).
-	s = PdhAddEnglishCounterW(query_, L"\\Processor Information(_Total)\\% Processor Performance", 0, &perfPctCounter_);
-	if(s != ERROR_SUCCESS || !perfPctCounter_)
-	{
-		PdhCloseQuery(query_);
-		query_ = nullptr;
-		return false;
-	}
+	// All counters are best-effort. At least one must provide useful data for Read() to succeed.
 
-	// Often stuck at base on some systems, but still useful as a *fallback base MHz* if WMI fails.
-	s = PdhAddEnglishCounterW(query_, L"\\Processor Information(_Total)\\Processor Frequency", 0, &freqMHzCounter_);
-	if(s != ERROR_SUCCESS || !freqMHzCounter_)
-	{
-		// Keep perfPctCounter_ but proceed without freq counter.
-		freqMHzCounter_ = nullptr;
-	}
+	s = PdhAddEnglishCounterW(query_, L"\\Processor Information(*)\\Processor Frequency", 0, &perCoreFreqMHzCounter_);
+	if(s != ERROR_SUCCESS || !perCoreFreqMHzCounter_)
+		perCoreFreqMHzCounter_ = nullptr;
+
+	s = PdhAddEnglishCounterW(query_, L"\\Processor Information(*)\\% Processor Performance", 0, &perCorePerfPctCounter_);
+	if(s != ERROR_SUCCESS || !perCorePerfPctCounter_)
+		perCorePerfPctCounter_ = nullptr;
+
+	s = PdhAddEnglishCounterW(query_, L"\\Processor Information(_Total)\\% Processor Performance", 0, &totalPerfPctCounter_);
+	if(s != ERROR_SUCCESS || !totalPerfPctCounter_)
+		totalPerfPctCounter_ = nullptr;
+
+	// Diagnostic only: total Processor Frequency is kept but never used for baseMHz_.
+	s = PdhAddEnglishCounterW(query_, L"\\Processor Information(_Total)\\Processor Frequency", 0, &totalFreqMHzCounter_);
+	if(s != ERROR_SUCCESS || !totalFreqMHzCounter_)
+		totalFreqMHzCounter_ = nullptr;
 
 	// Prime: PDH may need multiple collections before returning valid data.
 	PdhCollectQueryData(query_);
 	Sleep(50);
 	PdhCollectQueryData(query_);
 
-	lastGoodPerfPct_ = 0.0;
-	lastGoodFreqMHz_ = 0.0;
+	// At least one usable source is required.
+	bool hasDirectFreq = perCoreFreqMHzCounter_ != nullptr;
+	bool hasPerCorePerfBase = perCorePerfPctCounter_ != nullptr && baseMHz_ > 0.0;
+	bool hasTotalPerfBase = totalPerfPctCounter_ != nullptr && baseMHz_ > 0.0;
+	if(!hasDirectFreq && !hasPerCorePerfBase && !hasTotalPerfBase)
+	{
+		PdhCloseQuery(query_);
+		query_ = nullptr;
+		return false;
+	}
+
 	return true;
 }
 
@@ -156,14 +307,83 @@ static bool TryReadDoubleCounter(PDH_HCOUNTER c, double& outValue, unsigned long
 	return false;
 }
 
+static bool TryReadCounterArrayStats(
+	PDH_HCOUNTER counter,
+	double& outAvg,
+	double& outMax,
+	int& outCount,
+	unsigned long& outCStatus,
+	long& outStatus)
+{
+	outAvg = 0.0;
+	outMax = 0.0;
+	outCount = 0;
+	outCStatus = 0;
+	outStatus = 0;
+
+	if(!counter)
+		return false;
+
+	DWORD bufferSize = 0;
+	DWORD itemCount = 0;
+	auto s = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bufferSize, &itemCount, nullptr);
+	if(s != PDH_MORE_DATA || bufferSize == 0 || itemCount == 0)
+	{
+		outStatus = (long)s;
+		return false;
+	}
+
+	std::vector<BYTE> buffer(bufferSize);
+	auto items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(buffer.data());
+	s = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bufferSize, &itemCount, items);
+	outStatus = (long)s;
+	if(s != ERROR_SUCCESS)
+		return false;
+
+	double sum = 0.0;
+	double mx = 0.0;
+	int count = 0;
+	unsigned long lastStatus = 0;
+
+	for(DWORD i = 0; i < itemCount; ++i)
+	{
+		const auto& item = items[i];
+		if(!IsRealLogicalProcessorInstance(item.szName))
+			continue;
+
+		lastStatus = item.FmtValue.CStatus;
+		if(item.FmtValue.CStatus != ERROR_SUCCESS &&
+			item.FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
+			item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
+			continue;
+
+		const auto value = item.FmtValue.doubleValue;
+		if(value <= 0.0)
+			continue;
+
+		sum += value;
+		if(value > mx)
+			mx = value;
+		++count;
+	}
+
+	outCStatus = lastStatus;
+	if(count <= 0)
+		return false;
+
+	outAvg = sum / count;
+	outMax = mx;
+	outCount = count;
+	return true;
+}
+
 CpuReading CpuFrequency::Read()
 {
 	CpuReading r{};
 	r.baseMHz = baseMHz_;
 
-	if(!query_ || !perfPctCounter_)
+	if(!query_)
 	{
-		r.ok = false;
 		r.source = L"PDH-NotReady";
 		return r;
 	}
@@ -172,52 +392,124 @@ CpuReading CpuFrequency::Read()
 	lastPdhStatus_ = (long)s;
 	if(s != ERROR_SUCCESS)
 	{
-		r.ok = false;
-		r.source = L"PDH-CollectFail";
 		r.lastPdhStatus = lastPdhStatus_;
+		// Use cached reading on transient collect failure to avoid 0.00 GHz.
+		// This mirrors the cached fallback in step 4 below.
+		if(lastGoodAvgMHz_ > 0.0)
+		{
+			r.avgMHz = lastGoodAvgMHz_;
+			r.maxMHz = lastGoodMaxMHz_;
+			r.currentMHz = lastGoodAvgMHz_;
+			r.validCoreCount = lastGoodValidCoreCount_;
+			r.ok = true;
+			r.source = lastGoodSource_ + L"/Cached/CollectFail";
+			r.baseMHz = baseMHz_;
+			r.lastPdhCStatus = lastPdhCStatus_;
+			return r;
+		}
+		r.source = L"PDH-CollectFail";
 		return r;
 	}
 
-	// 1) Update fallback base from "Processor Frequency" if WMI base is missing.
-	double freqMHz = 0.0;
-	unsigned long cst = 0;
-	long st = 0;
-	if(freqMHzCounter_ && TryReadDoubleCounter(freqMHzCounter_, freqMHz, cst, st))
+	// Helper to publish a successful reading and update last-good cache.
+	auto publish = [&](double avg, double max, int count, const std::wstring& src)
 	{
-		if(freqMHz > 0.0) lastGoodFreqMHz_ = freqMHz;
-	}
+		r.avgMHz = avg;
+		r.maxMHz = max;
+		r.currentMHz = avg;
+		r.validCoreCount = count;
+		r.ok = true;
+		r.source = src;
+		r.lastPdhStatus = lastPdhStatus_;
+		r.lastPdhCStatus = lastPdhCStatus_;
 
-	if(baseMHz_ <= 0.0 && lastGoodFreqMHz_ > 0.0)
-		baseMHz_ = lastGoodFreqMHz_;
+		lastGoodAvgMHz_ = avg;
+		lastGoodMaxMHz_ = max;
+		lastGoodValidCoreCount_ = count;
+		lastGoodSource_ = src;
+	};
 
-	// 2) Read % Processor Performance (can exceed 100).
-	double perfPct = 0.0;
-	cst = 0;
-	st = 0;
-	if(TryReadDoubleCounter(perfPctCounter_, perfPct, cst, st))
+	// 1. Per-core direct frequency counter (primary source, no base needed).
+	//    Processor Frequency is current effective MHz on each core.
+	//    It must never be used as baseMHz_.
 	{
-		if(perfPct > 0.0) lastGoodPerfPct_ = perfPct;
+		double avg = 0.0, mx = 0.0;
+		int count = 0;
+		unsigned long cst = 0;
+		long st = 0;
+		if(perCoreFreqMHzCounter_ &&
+			TryReadCounterArrayStats(perCoreFreqMHzCounter_, avg, mx, count, cst, st))
+		{
+			lastPdhCStatus_ = cst;
+			lastPdhStatus_ = st;
+			publish(avg, mx, count, L"PDH-PerCore-Frequency");
+			return r;
+		}
 		lastPdhCStatus_ = cst;
 		lastPdhStatus_ = st;
 	}
 
+	// 2. Per-core performance percentage × WMI base MHz.
+	{
+		double avgPct = 0.0, maxPct = 0.0;
+		int count = 0;
+		unsigned long cst = 0;
+		long st = 0;
+		if(baseMHz_ > 0.0 && perCorePerfPctCounter_ &&
+			TryReadCounterArrayStats(perCorePerfPctCounter_, avgPct, maxPct, count, cst, st))
+		{
+			lastPdhCStatus_ = cst;
+			lastPdhStatus_ = st;
+			publish(baseMHz_ * avgPct / 100.0, baseMHz_ * maxPct / 100.0, count, L"PDH-PerCore-PerfBase");
+			return r;
+		}
+		lastPdhCStatus_ = cst;
+		lastPdhStatus_ = st;
+	}
+
+	// 3. _Total performance percentage × WMI base MHz.
+	{
+		double perfPct = 0.0;
+		unsigned long cst = 0;
+		long st = 0;
+		if(baseMHz_ > 0.0 && totalPerfPctCounter_ &&
+			TryReadDoubleCounter(totalPerfPctCounter_, perfPct, cst, st))
+		{
+			lastPdhCStatus_ = cst;
+			lastPdhStatus_ = st;
+			publish(baseMHz_ * perfPct / 100.0, baseMHz_ * perfPct / 100.0, 1, L"PDH-Total-PerfBase");
+			return r;
+		}
+	}
+
+	// 4. Cached last-good reading for transient PDH failures.
+	if(lastGoodAvgMHz_ > 0.0)
+	{
+		r.avgMHz = lastGoodAvgMHz_;
+		r.maxMHz = lastGoodMaxMHz_;
+		r.currentMHz = lastGoodAvgMHz_;
+		r.validCoreCount = lastGoodValidCoreCount_;
+		r.ok = true;
+		r.source = lastGoodSource_ + L"/Cached";
+		r.lastPdhStatus = lastPdhStatus_;
+		r.lastPdhCStatus = lastPdhCStatus_;
+		r.baseMHz = baseMHz_;
+		return r;
+	}
+
+	// 5. No usable frequency source produced a value.
+	//    If WMI base is known, indicate base-only (not a valid current Hz reading).
+	r.ok = false;
 	r.lastPdhStatus = lastPdhStatus_;
 	r.lastPdhCStatus = lastPdhCStatus_;
 	r.baseMHz = baseMHz_;
 
-	// 3) Produce reading even if perf% is missing (never show 0.0 unless base is unknown).
-	if(baseMHz_ <= 0.0)
-	{
-		r.ok = false;
+	bool hasAnyCounter = perCoreFreqMHzCounter_ || perCorePerfPctCounter_ || totalPerfPctCounter_;
+	if(!hasAnyCounter)
+		r.source = L"NoUsableCounter";
+	else if(baseMHz_ > 0.0)
+		r.source = L"BaseOnly-NoCurrentHz";
+	else
 		r.source = L"BaseUnknown";
-		return r;
-	}
-
-	double usedPct = lastGoodPerfPct_;
-	if(usedPct <= 0.0) usedPct = 100.0;
-
-	r.currentMHz = baseMHz_ * (usedPct / 100.0);
-	r.ok = true;
-	r.source = (lastGoodPerfPct_ > 0.0) ? L"PDH-%Perf" : L"PDH-BaseOnly";
 	return r;
 }

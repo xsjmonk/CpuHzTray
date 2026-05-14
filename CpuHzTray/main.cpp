@@ -25,74 +25,103 @@ static ULONG_PTR g_gdiplusToken = 0;
 
 static double ToGhz(double mhz) { return mhz / 1000.0; }
 
+static constexpr bool kRedrawEverySampleForSparkline = false;
+
 static void UpdateTrayIcon(HWND hwnd)
 {
 	auto reading = g_cpu.Read();
 	if(reading.ok)
-		g_historyMHz.Push(reading.currentMHz);
+		g_historyMHz.Push(reading.avgMHz);
 
-	// Text colors (explicit variables)
-	// Text colors are part of IconSpec defaults. Keep them there so changing
-	// IconSpec is sufficient (no need to modify the main loop).
-
-	IconSpec spec{};
-	if(reading.ok)
+	// Build tooltip
+	std::wstring newTooltip;
 	{
-		spec.ghz = ToGhz(reading.currentMHz);
-		spec.baseMHz = reading.baseMHz;
-		spec.overBase = (reading.baseMHz > 0) ? (reading.currentMHz > reading.baseMHz) : false;
-		spec.historyMHz = &g_historyMHz;
-		// Keep spec.textRgbNormal / spec.textRgbOver as-is.
-	}
-	else
-	{
-		spec.ghz = 0;
-		spec.baseMHz = 0;
-		spec.overBase = false;
-		spec.historyMHz = nullptr;
-		// Keep spec.textRgbNormal / spec.textRgbOver as-is.
-	}
-
-	HICON next = g_renderer.Render(spec);
-	if(!next)
-	{
-		static bool s_shown = false;
-		if(!s_shown)
+		std::wstringstream ss;
+		if(reading.ok)
 		{
-			s_shown = true;
-			auto err = g_renderer.GetFontError();
-			if(err && *err)
-			{
-				MessageBoxW(hwnd, err, L"CpuHzTray - Embedded font error", MB_OK | MB_ICONERROR);
-				DestroyWindow(hwnd);
-			}
+			ss << L"CPU Avg: " << std::fixed << std::setprecision(2) << ToGhz(reading.avgMHz) << L" GHz";
+			ss << L"\nCPU Max: " << std::fixed << std::setprecision(2) << ToGhz(reading.maxMHz) << L" GHz";
+			if(reading.baseMHz > 0)
+				ss << L"\nBase: " << std::fixed << std::setprecision(2) << ToGhz(reading.baseMHz) << L" GHz";
+			if(reading.validCoreCount > 0)
+				ss << L"\nCores: " << reading.validCoreCount;
+			ss << L"\nSource: " << reading.source;
 		}
-		return;
+		else
+		{
+			ss << L"CPU: --";
+			if(!reading.source.empty())
+				ss << L"\nSource: " << reading.source;
+		}
+		newTooltip = ss.str();
 	}
 
-	// Update tooltip
-	std::wstringstream ss;
-	ss << L"CPU: ";
-	if(reading.ok)
+	bool tooltipChanged = (newTooltip != g_nid.szTip);
+
+	// Determine if icon needs redrawing (only when displayed GHz text changes).
+	wchar_t displayKey[16]{};
+	swprintf_s(displayKey, L"%.2f", ToGhz(reading.ok ? reading.avgMHz : 0.0));
+
+	static std::wstring s_lastDisplayKey;
+	bool iconNeedsUpdate = kRedrawEverySampleForSparkline || (displayKey != s_lastDisplayKey);
+
+	if(!iconNeedsUpdate && !tooltipChanged)
+		return;
+
+	if(iconNeedsUpdate)
 	{
-		ss << std::fixed << std::setprecision(2) << ToGhz(reading.currentMHz) << L" GHz";
-		if(reading.baseMHz > 0)
-			ss << L" (base " << std::fixed << std::setprecision(2) << ToGhz(reading.baseMHz) << L" GHz)";
-		ss << L" [" << reading.source << L"]";
+		IconSpec spec{};
+		if(reading.ok)
+		{
+			spec.ghz = ToGhz(reading.avgMHz);
+			spec.baseMHz = reading.baseMHz;
+			spec.overBase = (reading.baseMHz > 0) ? (reading.avgMHz > reading.baseMHz) : false;
+			spec.historyMHz = &g_historyMHz;
+		}
+		else
+		{
+			spec.ghz = 0;
+			spec.baseMHz = 0;
+			spec.overBase = false;
+			spec.historyMHz = nullptr;
+		}
+
+		HICON next = g_renderer.Render(spec);
+		if(!next)
+		{
+			static bool s_shown = false;
+			if(!s_shown)
+			{
+				s_shown = true;
+				auto err = g_renderer.GetFontError();
+				if(err && *err)
+				{
+					MessageBoxW(hwnd, err, L"CpuHzTray - Embedded font error", MB_OK | MB_ICONERROR);
+					DestroyWindow(hwnd);
+				}
+			}
+			return;
+		}
+
+		g_nid.hIcon = next;
+		s_lastDisplayKey = displayKey;
+		wcsncpy_s(g_nid.szTip, newTooltip.c_str(), _TRUNCATE);
+
+		if(Shell_NotifyIconW(NIM_MODIFY, &g_nid))
+		{
+			SafeDestroyIcon(g_hIcon);
+			g_hIcon = next;
+		}
+		else
+		{
+			SafeDestroyIcon(next);
+		}
 	}
 	else
 	{
-		ss << L"--";
+		wcsncpy_s(g_nid.szTip, newTooltip.c_str(), _TRUNCATE);
+		Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 	}
-
-	// Replace icon safely (no leaks)
-	g_nid.hIcon = next;
-	wcsncpy_s(g_nid.szTip, ss.str().c_str(), _TRUNCATE);
-
-	Shell_NotifyIconW(NIM_MODIFY, &g_nid);
-
-	SafeDestroyIcon(g_hIcon);
-	g_hIcon = next;
 }
 
 static void ShowContextMenu(HWND hwnd, POINT pt)
