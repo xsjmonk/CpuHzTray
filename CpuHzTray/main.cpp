@@ -27,11 +27,154 @@ static double ToGhz(double mhz) { return mhz / 1000.0; }
 
 static constexpr bool kRedrawEverySampleForSparkline = false;
 
+struct RedrawDecisionInput
+{
+	bool displayedTextChanged;
+	bool tooltipChanged;
+	bool readingOk;
+	int previousHistoryCount;
+	int currentHistoryCount;
+	int samplesSinceIconRedraw;
+};
+
+struct RedrawDecision
+{
+	bool redrawIcon = false;
+	bool updateTooltipOnly = false;
+};
+
+static RedrawDecision ComputeRedrawDecision(const RedrawDecisionInput& in)
+{
+	RedrawDecision d;
+
+	// 1. Displayed GHz text changed -> always redraw icon.
+	if(in.displayedTextChanged)
+	{
+		d.redrawIcon = true;
+		return d;
+	}
+
+	// 2. Sparkline just became drawable (crossed <2 -> >=2 with a valid sample).
+	if(in.readingOk && in.previousHistoryCount < 2 && in.currentHistoryCount >= 2)
+	{
+		d.redrawIcon = true;
+		return d;
+	}
+
+	// 3. Throttled periodic redraw: redraw every 3 valid samples when sparkline is visible.
+	if(in.currentHistoryCount >= 2 && in.samplesSinceIconRedraw >= 3)
+	{
+		d.redrawIcon = true;
+		return d;
+	}
+
+	// 4. Tooltip changed without icon redraw conditions.
+	if(in.tooltipChanged)
+	{
+		d.updateTooltipOnly = true;
+		return d;
+	}
+
+	return d;
+}
+
+#ifdef _DEBUG
+static bool RunRedrawDecisionTests()
+{
+	// Case 1: sparkline just became drawable (prev < 2, curr >= 2, readingOk)
+	{
+		RedrawDecisionInput in{};
+		in.displayedTextChanged = false;
+		in.tooltipChanged = false;
+		in.readingOk = true;
+		in.previousHistoryCount = 1;
+		in.currentHistoryCount = 2;
+		in.samplesSinceIconRedraw = 0;
+		auto d = ComputeRedrawDecision(in);
+		if(!d.redrawIcon || d.updateTooltipOnly) return false;
+	}
+	// Case 2: sparkline visible, not enough samples since redraw
+	{
+		RedrawDecisionInput in{};
+		in.displayedTextChanged = false;
+		in.tooltipChanged = false;
+		in.readingOk = true;
+		in.previousHistoryCount = 2;
+		in.currentHistoryCount = 3;
+		in.samplesSinceIconRedraw = 1;
+		auto d = ComputeRedrawDecision(in);
+		if(d.redrawIcon || d.updateTooltipOnly) return false;
+	}
+	// Case 3: throttle reached (>= 3 samples since last redraw)
+	{
+		RedrawDecisionInput in{};
+		in.displayedTextChanged = false;
+		in.tooltipChanged = false;
+		in.readingOk = true;
+		in.previousHistoryCount = 2;
+		in.currentHistoryCount = 3;
+		in.samplesSinceIconRedraw = 3;
+		auto d = ComputeRedrawDecision(in);
+		if(!d.redrawIcon || d.updateTooltipOnly) return false;
+	}
+	// Case 4: displayed text changed
+	{
+		RedrawDecisionInput in{};
+		in.displayedTextChanged = true;
+		auto d = ComputeRedrawDecision(in);
+		if(!d.redrawIcon) return false;
+	}
+	// Case 5: tooltip-only when text unchanged and below throttle
+	{
+		RedrawDecisionInput in{};
+		in.displayedTextChanged = false;
+		in.tooltipChanged = true;
+		in.readingOk = true;
+		in.previousHistoryCount = 2;
+		in.currentHistoryCount = 2;
+		in.samplesSinceIconRedraw = 1;
+		auto d = ComputeRedrawDecision(in);
+		if(d.redrawIcon || !d.updateTooltipOnly) return false;
+	}
+	// Case 6: readingOk=false should not force sparkline redraw
+	{
+		RedrawDecisionInput in{};
+		in.displayedTextChanged = false;
+		in.tooltipChanged = false;
+		in.readingOk = false;
+		in.previousHistoryCount = 1;
+		in.currentHistoryCount = 1;
+		in.samplesSinceIconRedraw = 0;
+		auto d = ComputeRedrawDecision(in);
+		if(d.redrawIcon || d.updateTooltipOnly) return false;
+	}
+	// Edge: readingOk=false, prev < 2, curr >= 2 should NOT trigger sparkline redraw
+	{
+		RedrawDecisionInput in{};
+		in.displayedTextChanged = false;
+		in.tooltipChanged = false;
+		in.readingOk = false;
+		in.previousHistoryCount = 1;
+		in.currentHistoryCount = 2;
+		in.samplesSinceIconRedraw = 0;
+		auto d = ComputeRedrawDecision(in);
+		if(d.redrawIcon || d.updateTooltipOnly) return false;
+	}
+	return true;
+}
+#endif
+
 static void UpdateTrayIcon(HWND hwnd)
 {
 	auto reading = g_cpu.Read();
+
+	// Push history and track throttle counter.
+	static int s_samplesSinceIconRedraw = 0;
 	if(reading.ok)
+	{
 		g_historyMHz.Push(reading.avgMHz);
+		++s_samplesSinceIconRedraw;
+	}
 
 	// Build tooltip
 	std::wstring newTooltip;
@@ -63,17 +206,33 @@ static void UpdateTrayIcon(HWND hwnd)
 
 	bool tooltipChanged = (newTooltip != g_nid.szTip);
 
-	// Determine if icon needs redrawing (only when displayed GHz text changes).
+	// Track display key change.
 	wchar_t displayKey[16]{};
 	swprintf_s(displayKey, L"%.2f", ToGhz(reading.ok ? reading.avgMHz : 0.0));
 
 	static std::wstring s_lastDisplayKey;
-	bool iconNeedsUpdate = kRedrawEverySampleForSparkline || (displayKey != s_lastDisplayKey);
+	bool displayKeyChanged = (displayKey != s_lastDisplayKey);
 
-	if(!iconNeedsUpdate && !tooltipChanged)
+	// Sparkline drawability tracking.
+	static int s_prevHistoryCount = 0;
+	int currHistoryCount = (int)g_historyMHz.Count();
+
+	// Compute redraw decision.
+	RedrawDecisionInput in{};
+	in.displayedTextChanged = displayKeyChanged;
+	in.tooltipChanged = tooltipChanged;
+	in.readingOk = reading.ok;
+	in.previousHistoryCount = s_prevHistoryCount;
+	in.currentHistoryCount = currHistoryCount;
+	in.samplesSinceIconRedraw = s_samplesSinceIconRedraw;
+
+	auto decision = ComputeRedrawDecision(in);
+	s_prevHistoryCount = currHistoryCount;
+
+	if(!decision.redrawIcon && !decision.updateTooltipOnly)
 		return;
 
-	if(iconNeedsUpdate)
+	if(decision.redrawIcon)
 	{
 		IconSpec spec{};
 		if(reading.ok)
@@ -116,6 +275,7 @@ static void UpdateTrayIcon(HWND hwnd)
 		{
 			SafeDestroyIcon(g_hIcon);
 			g_hIcon = next;
+			s_samplesSinceIconRedraw = 0;
 		}
 		else
 		{
@@ -210,6 +370,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 		g_gdiplusToken = 0;
 
 	g_cpu.Initialize();
+
+#ifdef _DEBUG
+	if(!RunRedrawDecisionTests())
+	{
+		MessageBoxW(nullptr, L"RedrawDecision self-tests failed.", L"CpuHzTray", MB_OK | MB_ICONERROR);
+		return 1;
+	}
+#endif
 
 	WNDCLASSEXW wc{};
 	wc.cbSize = sizeof(wc);

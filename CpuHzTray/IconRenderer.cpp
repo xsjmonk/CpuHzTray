@@ -293,8 +293,8 @@ HICON IconRenderer::Render(const IconSpec& spec) const
 		const int splitY = (int)std::lround(size * kPlotHeightRatio);
 		int splitYClamped = splitY;
 	{
-		int minPlot = 4;
-		int maxPlot = size - 6; // keep at least 6px for text
+		int minPlot = 5;
+		int maxPlot = size - 8; // keep at least 8px for text
 		if(splitYClamped < minPlot) splitYClamped = minPlot;
 		if(splitYClamped > maxPlot) splitYClamped = maxPlot;
 	}
