@@ -41,10 +41,15 @@ static void UpdateTrayIcon(HWND hwnd)
 		{
 			ss << L"CPU Avg: " << std::fixed << std::setprecision(2) << ToGhz(reading.avgMHz) << L" GHz";
 			ss << L"\nCPU Max: " << std::fixed << std::setprecision(2) << ToGhz(reading.maxMHz) << L" GHz";
+			ss << L"\nCPU Min: " << std::fixed << std::setprecision(2) << ToGhz(reading.minMHz) << L" GHz";
 			if(reading.baseMHz > 0)
 				ss << L"\nBase: " << std::fixed << std::setprecision(2) << ToGhz(reading.baseMHz) << L" GHz";
 			if(reading.validCoreCount > 0)
 				ss << L"\nCores: " << reading.validCoreCount;
+			if(!reading.accuracy.empty())
+				ss << L"\nAccuracy: " << reading.accuracy;
+			if(!reading.warning.empty())
+				ss << L"\nWarning: " << reading.warning;
 			ss << L"\nSource: " << reading.source;
 		}
 		else
@@ -182,6 +187,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 {
+	// Parse --diagnose-hz flag
+	{
+		int argc = 0;
+		auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+		if(argv)
+		{
+			for(int i = 0; i < argc; ++i)
+			{
+				if(_wcsicmp(argv[i], L"--diagnose-hz") == 0)
+				{
+					g_cpu.EnableDiagnosticLogger(L"candidate_readings.csv");
+					break;
+				}
+			}
+			LocalFree(argv);
+		}
+	}
 	// GDI+ is used for sparkline rendering.
 	Gdiplus::GdiplusStartupInput gdiplusStartupInput;
 	if(Gdiplus::GdiplusStartup(&g_gdiplusToken, &gdiplusStartupInput, nullptr) != Gdiplus::Ok)
