@@ -166,6 +166,149 @@ bool IsNominalLike(const SampleWindow& w, double baseMHz)
 	return true;
 }
 
+static double MaterialDeltaMHz(double baseMHz)
+{
+	return baseMHz > 0.0 ? std::max(75.0, baseMHz * 0.035) : 75.0;
+}
+
+static bool Near(double a, double b, double eps = 0.000001)
+{
+	return std::abs(a - b) <= eps;
+}
+
+struct CandidateSample
+{
+	std::wstring source;
+	double avgMHz = 0.0;
+	double maxMHz = 0.0;
+	double minMHz = 0.0;
+	int validCoreCount = 0;
+	bool ok = false;
+	long pdhStatus = 0;
+	unsigned long pdhCStatus = 0;
+};
+
+static bool IsBelowBase(double valueMHz, double baseMHz)
+{
+	return baseMHz > 0.0 && valueMHz > 0.0 && valueMHz < baseMHz;
+}
+
+static bool IsBaseLikeValue(double valueMHz, double baseMHz)
+{
+	if(baseMHz <= 0.0 || valueMHz <= 0.0)
+		return false;
+	return std::abs(valueMHz - baseMHz) <= MaterialDeltaMHz(baseMHz);
+}
+
+static int ChooseBestCandidate(
+	const CandidateSample* candidates, int nCandidates,
+	const SampleWindow& powerInfoWin,
+	const SampleWindow& perCorePerfWin,
+	const SampleWindow& totalPerfWin,
+	const SampleWindow& procFreqWin,
+	double baseMHz,
+	bool& outAllNominalLike)
+{
+	outAllNominalLike = true;
+	if(nCandidates <= 0) return -1;
+
+	int piIdx = -1, perCoreIdx = -1, totalIdx = -1, procFreqIdx = -1;
+	for(int i = 0; i < nCandidates; ++i)
+	{
+		if(candidates[i].source == L"PowerInformation-CurrentMhz") piIdx = i;
+		else if(candidates[i].source == L"PDH-PerCore-PerfBase") perCoreIdx = i;
+		else if(candidates[i].source == L"PDH-Total-PerfBase") totalIdx = i;
+		else if(candidates[i].source == L"PDH-ProcessorFrequency-Diagnostic") procFreqIdx = i;
+	}
+
+	// Rule 0 — If the highest-priority candidate by normal order is base-like,
+	// prefer the first available below-base live candidate in priority order.
+	// This works even when a non-base diagnostic is present alongside a below-base source.
+	if(baseMHz > 0.0)
+	{
+		int normalPriority[] = { piIdx, perCoreIdx, totalIdx, procFreqIdx };
+		int normalFirstIdx = -1;
+		for(int i = 0; i < 4; ++i)
+		{
+			if(normalPriority[i] >= 0)
+			{
+				normalFirstIdx = normalPriority[i];
+				break;
+			}
+		}
+
+		if(normalFirstIdx >= 0 && IsBaseLikeValue(candidates[normalFirstIdx].avgMHz, baseMHz))
+		{
+			int belowBasePriority[] = { perCoreIdx, totalIdx, piIdx, procFreqIdx };
+			for(int i = 0; i < 4; ++i)
+			{
+				int idx = belowBasePriority[i];
+				if(idx >= 0 && IsBelowBase(candidates[idx].avgMHz, baseMHz))
+				{
+					outAllNominalLike = false;
+					return idx;
+				}
+			}
+		}
+	}
+
+	// Rule 1 — If PowerInformation is base-like, prefer the first available live current source.
+	if(piIdx >= 0 && IsBaseLikeValue(candidates[piIdx].avgMHz, baseMHz))
+	{
+		int livePriority[] = { perCoreIdx, totalIdx, procFreqIdx };
+		for(int i = 0; i < 3; ++i)
+		{
+			int idx = livePriority[i];
+			if(idx >= 0 && candidates[idx].avgMHz > 0.0)
+			{
+				outAllNominalLike = false;
+				return idx;
+			}
+		}
+	}
+
+	// Rule 2 — Existing NominalLike fallback priority.
+	const std::wstring kPriority[] = {
+		L"PowerInformation-CurrentMhz",
+		L"PDH-PerCore-PerfBase",
+		L"PDH-Total-PerfBase",
+		L"PDH-ProcessorFrequency-Diagnostic"
+	};
+
+	// First pass: find first non-NominalLike candidate in priority order.
+	for(const auto& prio : kPriority)
+	{
+		int idx = -1;
+		const SampleWindow* w = nullptr;
+		if(prio == L"PowerInformation-CurrentMhz") { idx = piIdx; w = &powerInfoWin; }
+		else if(prio == L"PDH-PerCore-PerfBase") { idx = perCoreIdx; w = &perCorePerfWin; }
+		else if(prio == L"PDH-Total-PerfBase") { idx = totalIdx; w = &totalPerfWin; }
+		else if(prio == L"PDH-ProcessorFrequency-Diagnostic") { idx = procFreqIdx; w = &procFreqWin; }
+
+		if(idx < 0) continue;
+		bool nominal = w ? IsNominalLike(*w, baseMHz) : false;
+		if(!nominal)
+		{
+			outAllNominalLike = false;
+			return idx;
+		}
+	}
+
+	// Second pass: all are NominalLike, pick highest priority available.
+	for(const auto& prio : kPriority)
+	{
+		int idx = -1;
+		if(prio == L"PowerInformation-CurrentMhz") idx = piIdx;
+		else if(prio == L"PDH-PerCore-PerfBase") idx = perCoreIdx;
+		else if(prio == L"PDH-Total-PerfBase") idx = totalIdx;
+		else if(prio == L"PDH-ProcessorFrequency-Diagnostic") idx = procFreqIdx;
+
+		if(idx >= 0) return idx;
+	}
+
+	return -1;
+}
+
 std::wstring GetUtcTimestamp()
 {
 	SYSTEMTIME st;
@@ -217,7 +360,7 @@ bool RunSelfTests()
 	{
 		double vals[] = {2200.0, 2880.0, 2500.0};
 		auto s = ComputeCoreStats(vals, 3);
-		if(s.avg != 2526.666666666667 || s.max != 2880.0 || s.min != 2200.0 || s.count != 3) return false;
+		if(!Near(s.avg, 7580.0 / 3.0) || s.max != 2880.0 || s.min != 2200.0 || s.count != 3) return false;
 	}
 	{
 		double vals[] = {0.0, 0.0, 0.0};
@@ -257,6 +400,331 @@ bool RunSelfTests()
 		if(!IsNominalLike(w, baseMhz)) return false;
 		w.Push(baseMhz + threshold + 1.0);
 		if(IsNominalLike(w, baseMhz)) return false;
+	}
+
+	// ChooseBestCandidate tests
+	{
+		// Test 1: Below base, no warm-up wait.
+		CandidateSample t1[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 1200.0, 1300.0, 1100.0, 16, true},
+			{L"PDH-Total-PerfBase", 1250.0, 1250.0, 1250.0, 1, true},
+		};
+		SampleWindow eWins[4];
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t1, 3, eWins[0], eWins[1], eWins[2], eWins[3], 2500.0, allNom);
+		if(idx != 1 || t1[idx].avgMHz != 1200.0 || allNom) return false;
+	}
+	{
+		// Test 2: Below base, total-only fallback.
+		CandidateSample t2[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-Total-PerfBase", 1400.0, 1400.0, 1400.0, 1, true},
+		};
+		SampleWindow eWins[4];
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t2, 2, eWins[0], eWins[1], eWins[2], eWins[3], 2500.0, allNom);
+		if(idx != 1 || t2[idx].avgMHz != 1400.0 || allNom) return false;
+	}
+	{
+		// Test 3: Above base/turbo — PowerInfo is not base-like, should win.
+		CandidateSample t3[] = {
+			{L"PowerInformation-CurrentMhz", 3900.0, 3900.0, 3900.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 3800.0, 3800.0, 3800.0, 16, true},
+		};
+		SampleWindow eWins[4];
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t3, 2, eWins[0], eWins[1], eWins[2], eWins[3], 2500.0, allNom);
+		if(idx != 0 || allNom) return false;
+	}
+	{
+		// Test 4: PowerInfo base-like, percentage materially different.
+		CandidateSample t4[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 3100.0, 3100.0, 3100.0, 16, true},
+		};
+		SampleWindow eWins[4];
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t4, 2, eWins[0], eWins[1], eWins[2], eWins[3], 2500.0, allNom);
+		if(idx != 1 || t4[idx].avgMHz != 3100.0 || allNom) return false;
+	}
+	{
+		// Test 5: No PDH percentage candidate, only PowerInfo.
+		CandidateSample t5[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+		};
+		SampleWindow eWins[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t5, 1, eWins[0], eWins[1], eWins[2], eWins[3], 2500.0, allNom);
+		if(idx != 0 || allNom) return false;
+	}
+	{
+		// Test 6: All nominal-like.
+		CandidateSample t6[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2510.0, 2510.0, 2510.0, 16, true},
+			{L"PDH-Total-PerfBase", 2490.0, 2490.0, 2490.0, 1, true},
+		};
+		SampleWindow nomWins[4];
+		for(int i = 0; i < 6; ++i)
+		{
+			nomWins[0].Push(2502.0);
+			nomWins[1].Push(2508.0);
+			nomWins[2].Push(2492.0);
+		}
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t6, 3, nomWins[0], nomWins[1], nomWins[2], nomWins[3], 2500.0, allNom);
+		if(idx != 2 || allNom) return false;
+	}
+	// Test A — first sample below base from per-core percentage wins over base-like PowerInfo
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2460.0, 2480.0, 2440.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2460.0 || allNom) return false;
+	}
+	// Test B — first sample below base from total percentage wins when per-core is unavailable
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-Total-PerfBase", 2460.0, 2460.0, 2460.0, 1, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2460.0 || allNom) return false;
+	}
+	// Test C — first sample below base from diagnostic Processor Frequency wins when percentage unavailable
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 2460.0, 2480.0, 2440.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2460.0 || allNom) return false;
+	}
+	// Test D — source priority among below-base candidates
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2470.0, 2480.0, 2460.0, 16, true},
+			{L"PDH-Total-PerfBase", 2300.0, 2300.0, 2300.0, 1, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 2200.0, 2210.0, 2190.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 4, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2470.0 || allNom) return false;
+	}
+	// Test E — above-base diagnostic wins if PowerInfo base-like and percentage unavailable
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 3100.0, 3150.0, 3000.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 3100.0 || allNom) return false;
+	}
+	// Test F — PowerInfo still wins when it is not base-like
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 3900.0, 3900.0, 3900.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2460.0, 2480.0, 2440.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 0 || allNom) return false;
+	}
+	// Test G — slightly below-base live candidate must win; never snap to base.
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2493.0, 2495.0, 2490.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2493.0 || allNom) return false;
+	}
+	// Test H — exact-base PowerInformation with exact-base live source chooses the live source when available.
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2500.0, 2500.0, 2500.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2500.0 || allNom) return false;
+	}
+	// Test I — when PowerInformation is not base-like, it still wins over a lower live candidate.
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 3900.0, 3900.0, 3900.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2493.0, 2495.0, 2490.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 0 || allNom) return false;
+	}
+	// Test J — PowerInformation below base beats exact-base PDH per-core
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2493.0, 2495.0, 2490.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2500.0, 2500.0, 2500.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 0 || t[idx].avgMHz != 2493.0 || allNom) return false;
+	}
+	// Test K — PowerInformation below base beats exact-base PDH total when per-core is unavailable
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2493.0, 2495.0, 2490.0, 16, true},
+			{L"PDH-Total-PerfBase", 2500.0, 2500.0, 2500.0, 1, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 0 || t[idx].avgMHz != 2493.0 || allNom) return false;
+	}
+	// Test L — PDH per-core below base still beats PowerInformation exact base
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2493.0, 2495.0, 2490.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2493.0 || allNom) return false;
+	}
+	// Test M — source priority among multiple below-base candidates
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2493.0, 2495.0, 2490.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2480.0, 2485.0, 2475.0, 16, true},
+			{L"PDH-Total-PerfBase", 2470.0, 2470.0, 2470.0, 1, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 2460.0, 2465.0, 2455.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 4, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2480.0 || allNom) return false;
+	}
+	// Test N — above-base PowerInformation unchanged
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 3900.0, 3900.0, 3900.0, 16, true},
+			{L"PDH-PerCore-PerfBase", 2493.0, 2495.0, 2490.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 0 || allNom) return false;
+	}
+	// Test O — PowerInformation unavailable; exact-base per-core must not beat below-base total
+	{
+		CandidateSample t[] = {
+			{L"PDH-PerCore-PerfBase", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-Total-PerfBase", 2493.0, 2493.0, 2493.0, 1, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2493.0 || allNom) return false;
+	}
+	// Test P — PowerInformation unavailable; exact-base per-core must not beat below-base diagnostic
+	{
+		CandidateSample t[] = {
+			{L"PDH-PerCore-PerfBase", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 2493.0, 2495.0, 2490.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2493.0 || allNom) return false;
+	}
+	// Test Q — PowerInformation unavailable; source priority among below-base candidates remains unchanged
+	{
+		CandidateSample t[] = {
+			{L"PDH-PerCore-PerfBase", 2497.0, 2498.0, 2496.0, 16, true},
+			{L"PDH-Total-PerfBase", 2300.0, 2300.0, 2300.0, 1, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 2200.0, 2210.0, 2190.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 3, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 0 || t[idx].avgMHz != 2497.0 || allNom) return false;
+	}
+	// Test R — no base-like candidate; preserve existing priority
+	{
+		CandidateSample t[] = {
+			{L"PDH-PerCore-PerfBase", 3900.0, 3900.0, 3900.0, 16, true},
+			{L"PDH-Total-PerfBase", 2493.0, 2493.0, 2493.0, 1, true},
+		};
+		SampleWindow w[4];
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 0 || allNom) return false;
+	}
+	// Test S — PowerInformation unavailable; exact-base per-core must not beat below-base total even when diagnostic is non-base
+	{
+		CandidateSample t[] = {
+			{L"PDH-PerCore-PerfBase", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-Total-PerfBase", 2493.0, 2493.0, 2493.0, 1, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 3600.0, 3600.0, 3600.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 3, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2493.0 || allNom) return false;
+	}
+	// Test T — PowerInformation unavailable; exact-base per-core must not beat below-base diagnostic when total unavailable
+	{
+		CandidateSample t[] = {
+			{L"PDH-PerCore-PerfBase", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 2493.0, 2495.0, 2490.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 2, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2493.0 || allNom) return false;
+	}
+	// Test U — PowerInformation exact base must not beat below-base total even when diagnostic is non-base
+	{
+		CandidateSample t[] = {
+			{L"PowerInformation-CurrentMhz", 2500.0, 2500.0, 2500.0, 16, true},
+			{L"PDH-Total-PerfBase", 2493.0, 2493.0, 2493.0, 1, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 3600.0, 3600.0, 3600.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = true;
+		int idx = ChooseBestCandidate(t, 3, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 1 || t[idx].avgMHz != 2493.0 || allNom) return false;
+	}
+	// Test V — clearly non-base highest-priority candidate remains unchanged
+	{
+		CandidateSample t[] = {
+			{L"PDH-PerCore-PerfBase", 3900.0, 3900.0, 3900.0, 16, true},
+			{L"PDH-Total-PerfBase", 2493.0, 2493.0, 2493.0, 1, true},
+			{L"PDH-ProcessorFrequency-Diagnostic", 3600.0, 3600.0, 3600.0, 16, true},
+		};
+		SampleWindow w[4];
+		bool allNom = false;
+		int idx = ChooseBestCandidate(t, 3, w[0], w[1], w[2], w[3], 2500.0, allNom);
+		if(idx != 0 || allNom) return false;
 	}
 	return true;
 }
@@ -575,19 +1043,7 @@ CpuReading CpuFrequency::Read()
 	CpuReading r{};
 	r.baseMHz = baseMHz_;
 
-	struct Candidate
-	{
-		std::wstring source;
-		double avgMHz = 0.0;
-		double maxMHz = 0.0;
-		double minMHz = 0.0;
-		int validCoreCount = 0;
-		bool ok = false;
-		long pdhStatus = 0;
-		unsigned long pdhCStatus = 0;
-	};
-
-	Candidate candidates[4];
+	CandidateSample candidates[4];
 	int nCandidates = 0;
 
 	// 1. PowerInformation (primary)
@@ -706,63 +1162,11 @@ CpuReading CpuFrequency::Read()
 			w->Push(candidates[i].avgMHz);
 	}
 
-	// 4. Select best candidate
-	const std::wstring kPriority[] = {
-		L"PowerInformation-CurrentMhz",
-		L"PDH-PerCore-PerfBase",
-		L"PDH-Total-PerfBase",
-		L"PDH-ProcessorFrequency-Diagnostic"
-	};
-
-	int bestIdx = -1;
+	// 4. Select best candidate (rules A, B, C)
 	bool allNominalLike = true;
-
-	// First pass: find first non-NominalLike candidate in priority order
-	for(const auto& prio : kPriority)
-	{
-		for(int i = 0; i < nCandidates; ++i)
-		{
-			if(candidates[i].source != prio)
-				continue;
-
-			SampleWindow* w = nullptr;
-			if(prio == L"PowerInformation-CurrentMhz")
-				w = &powerInfoWindow_;
-			else if(prio == L"PDH-PerCore-PerfBase")
-				w = &perCorePerfWindow_;
-			else if(prio == L"PDH-Total-PerfBase")
-				w = &totalPerfWindow_;
-			else if(prio == L"PDH-ProcessorFrequency-Diagnostic")
-				w = &procFreqWindow_;
-
-			bool nominal = w ? IsNominalLike(*w, baseMHz_) : false;
-			if(!nominal)
-			{
-				bestIdx = i;
-				allNominalLike = false;
-				break;
-			}
-			break;
-		}
-		if(bestIdx >= 0) break;
-	}
-
-	// Second pass: if all are NominalLike, pick highest priority available
-	if(bestIdx < 0)
-	{
-		for(const auto& prio : kPriority)
-		{
-			for(int i = 0; i < nCandidates; ++i)
-			{
-				if(candidates[i].source == prio)
-				{
-					bestIdx = i;
-					break;
-				}
-			}
-			if(bestIdx >= 0) break;
-		}
-	}
+	int bestIdx = ChooseBestCandidate(candidates, nCandidates,
+		powerInfoWindow_, perCorePerfWindow_, totalPerfWindow_, procFreqWindow_,
+		baseMHz_, allNominalLike);
 
 	// 5. Build result from selected candidate
 	if(bestIdx >= 0)

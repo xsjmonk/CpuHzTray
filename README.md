@@ -35,27 +35,41 @@ NominalLike detection and priority-based selection:
    and does **not** track live frequency changes. Used only when all higher-
    priority sources are NominalLike or unavailable.
 
-### NominalLike detection
+### Source selection rules
 
-A per-source rolling window (10 samples) tracks recent readings. A source
-is considered **NominalLike** when:
+The app collects all available sources every sample, then applies these
+rules in order:
 
-- `baseMHz > 0` (WMI `MaxClockSpeed` was read successfully)
-- At least 6 samples exist in the window
-- All 6 most recent samples fall within `max(75 MHz, baseMHz × 0.035)` of
-  `baseMHz` (≈3.5% or 75 MHz, whichever is larger)
+**Rule 1 — Immediate below-base actual wins over base-like direct source.**
+If `PowerInformation-CurrentMhz` is within `max(75 MHz, baseMHz × 0.035)`
+of base (i.e. base-like) and another valid non-PowerInformation candidate
+reports `avgMHz < baseMHz − max(10 MHz, baseMHz × 0.005)` (below base),
+the below-base source is selected immediately, without waiting for 6
+NominalLike samples. Priority: (a) per-core `% Processor Performance`,
+(b) `_Total % Processor Performance`, (c) diagnostic `Processor Frequency`.
 
-**Source selection logic:**
-1. If any source is **not** NominalLike → pick the highest-priority
-   non-NominalLike source.
-2. If **all** sources are NominalLike → pick the highest-priority available
-   source and append `/NominalLike` to the source name.
-3. A **Warning** line appears in the tooltip when the displayed value is
-   NominalLike, indicating the reading may not reflect the true effective
-   clock.
+**Rule 2 — Immediate materially-different live candidate wins over base-like direct source.**
+If `PowerInformation-CurrentMhz` is base-like and another source differs
+from base by more than `max(75 MHz, baseMHz × 0.035)`, select it
+immediately (same priority order). This catches both turbo and below-base
+cases where a live source varies while PowerInformation is stuck at base.
 
-This prevents the tray from falsely presenting a stuck nominal/base Hz as
-a live effective Hz.
+**Rule 3 — NominalLike fallback priority.**
+If neither rule 1 nor 2 selects a candidate, fall back to the original
+priority order:
+1. `PowerInformation-CurrentMhz`
+2. `PDH-PerCore-PerfBase`
+3. `PDH-Total-PerfBase`
+4. `PDH-ProcessorFrequency-Diagnostic`
+
+Within this list, a per-source rolling window (10 samples) tracks recent
+readings. A source is **NominalLike** when `baseMHz > 0`, the window has
+at least 6 samples, and all 6 most recent samples fall within
+`max(75 MHz, baseMHz × 0.035)` of base. The first non-NominalLike source
+in priority order is selected. If all are NominalLike, the highest-priority
+available source is selected and `/NominalLike` is appended to the source
+name. A **Warning** line appears in the tooltip when the displayed value
+is NominalLike.
 
 ### Cached fallback
 

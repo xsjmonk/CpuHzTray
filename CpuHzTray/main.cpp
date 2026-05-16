@@ -16,12 +16,17 @@ static const wchar_t* kWndClass = L"CpuHzTray.HiddenWindow";
 
 static NOTIFYICONDATAW g_nid{};
 static HICON g_hIcon = nullptr;
+static bool g_trayIconAdded = false;
+static UINT g_taskbarCreatedMsg = 0;
 
 static CpuFrequency g_cpu;
 static IconRenderer g_renderer;
 static RingBufferD<30> g_historyMHz;
 
 static ULONG_PTR g_gdiplusToken = 0;
+
+static constexpr GUID kTrayIconGuid =
+{ 0x7d8e1a64, 0x7a5e, 0x4d9b, { 0x9d, 0x45, 0x30, 0xa0, 0x48, 0xe8, 0x1f, 0x73 } };
 
 static double ToGhz(double mhz) { return mhz / 1000.0; }
 
@@ -164,6 +169,104 @@ static bool RunRedrawDecisionTests()
 }
 #endif
 
+static void FillTrayIconIdentity(NOTIFYICONDATAW& nid, HWND hwnd) noexcept
+{
+	nid.hWnd = hwnd;
+	nid.uID = 1;
+	nid.uFlags |= NIF_GUID;
+	nid.guidItem = kTrayIconGuid;
+}
+
+#ifdef _DEBUG
+static bool RunTrayIdentityTests()
+{
+	NOTIFYICONDATAW nid{};
+	nid.cbSize = sizeof(nid);
+	FillTrayIconIdentity(nid, reinterpret_cast<HWND>(static_cast<UINT_PTR>(0x1234)));
+	if(nid.hWnd != reinterpret_cast<HWND>(static_cast<UINT_PTR>(0x1234))) return false;
+	if(nid.uID != 1) return false;
+	if((nid.uFlags & NIF_GUID) == 0) return false;
+	if(!IsEqualGUID(nid.guidItem, kTrayIconGuid)) return false;
+	return true;
+}
+#endif
+
+static void DeleteTrayIconByIdentity(HWND hwnd) noexcept
+{
+	if(!hwnd) return;
+	NOTIFYICONDATAW nid{};
+	nid.cbSize = sizeof(nid);
+	FillTrayIconIdentity(nid, hwnd);
+	Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+static void RemoveTrayIcon()
+{
+	if(g_trayIconAdded)
+	{
+		DeleteTrayIconByIdentity(g_nid.hWnd);
+		g_trayIconAdded = false;
+	}
+}
+
+static const wchar_t* EffectiveTooltip(const wchar_t* tooltip) noexcept
+{
+	return (tooltip && *tooltip) ? tooltip : L"CPU Hz tray";
+}
+
+static bool AddTrayIcon(HWND hwnd, HICON icon, const wchar_t* tooltip)
+{
+	if(!hwnd || !icon) return false;
+
+	DeleteTrayIconByIdentity(hwnd);
+
+	g_trayIconAdded = false;
+
+	NOTIFYICONDATAW nid{};
+	nid.cbSize = sizeof(nid);
+	FillTrayIconIdentity(nid, hwnd);
+	nid.uFlags |= NIF_MESSAGE | NIF_ICON | NIF_TIP;
+	nid.uCallbackMessage = WMAPP_TRAY;
+	nid.hIcon = icon;
+	wcsncpy_s(nid.szTip, EffectiveTooltip(tooltip), _TRUNCATE);
+
+	if(!Shell_NotifyIconW(NIM_ADD, &nid))
+		return false;
+
+	g_trayIconAdded = true;
+	g_nid = nid;
+	g_nid.uVersion = NOTIFYICON_VERSION_4;
+	Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
+
+	return true;
+}
+
+static bool ModifyTrayIcon(HWND hwnd, HICON icon, const wchar_t* tooltip)
+{
+	if(!g_trayIconAdded)
+		return AddTrayIcon(hwnd, icon, tooltip);
+
+	if(!hwnd || !icon) return false;
+
+	NOTIFYICONDATAW nid = g_nid;
+	nid.cbSize = sizeof(nid);
+	FillTrayIconIdentity(nid, hwnd);
+	nid.uFlags |= NIF_MESSAGE | NIF_ICON | NIF_TIP;
+	nid.uCallbackMessage = WMAPP_TRAY;
+	nid.hIcon = icon;
+	wcsncpy_s(nid.szTip, EffectiveTooltip(tooltip), _TRUNCATE);
+
+	if(Shell_NotifyIconW(NIM_MODIFY, &nid))
+	{
+		g_nid = nid;
+		return true;
+	}
+
+	DeleteTrayIconByIdentity(hwnd);
+	g_trayIconAdded = false;
+	return AddTrayIcon(hwnd, icon, tooltip);
+}
+
 static void UpdateTrayIcon(HWND hwnd)
 {
 	auto reading = g_cpu.Read();
@@ -267,11 +370,9 @@ static void UpdateTrayIcon(HWND hwnd)
 			return;
 		}
 
-		g_nid.hIcon = next;
 		s_lastDisplayKey = displayKey;
-		wcsncpy_s(g_nid.szTip, newTooltip.c_str(), _TRUNCATE);
 
-		if(Shell_NotifyIconW(NIM_MODIFY, &g_nid))
+		if(ModifyTrayIcon(hwnd, next, newTooltip.c_str()))
 		{
 			SafeDestroyIcon(g_hIcon);
 			g_hIcon = next;
@@ -284,8 +385,7 @@ static void UpdateTrayIcon(HWND hwnd)
 	}
 	else
 	{
-		wcsncpy_s(g_nid.szTip, newTooltip.c_str(), _TRUNCATE);
-		Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+		ModifyTrayIcon(hwnd, g_hIcon, newTooltip.c_str());
 	}
 }
 
@@ -303,6 +403,15 @@ static void ShowContextMenu(HWND hwnd, POINT pt)
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+	if(g_taskbarCreatedMsg != 0 && msg == g_taskbarCreatedMsg)
+	{
+		g_trayIconAdded = false;
+		if(g_hIcon)
+			AddTrayIcon(hwnd, g_hIcon, g_nid.szTip[0] ? g_nid.szTip : L"CPU Hz tray");
+		UpdateTrayIcon(hwnd);
+		return 0;
+	}
+
 	switch(msg)
 	{
 	case WM_CREATE:
@@ -314,6 +423,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 			UpdateTrayIcon(hwnd);
 		return 0;
 
+	case WM_QUERYENDSESSION:
+		RemoveTrayIcon();
+		return TRUE;
+
+	case WM_ENDSESSION:
+		if(wParam)
+			RemoveTrayIcon();
+		return 0;
+
 	case WM_COMMAND:
 		if(LOWORD(wParam) == ID_TRAY_EXIT)
 		{
@@ -323,7 +441,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 		break;
 
 	case WMAPP_TRAY:
-		// Left click: no-op. Right click: context menu.
 		if(LOWORD(lParam) == WM_RBUTTONUP)
 		{
 			POINT pt;
@@ -335,10 +452,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 	case WM_DESTROY:
 		KillTimer(hwnd, TIMER_ID);
-
-		Shell_NotifyIconW(NIM_DELETE, &g_nid);
+		RemoveTrayIcon();
 		SafeDestroyIcon(g_hIcon);
-
 		PostQuitMessage(0);
 		return 0;
 	}
@@ -347,6 +462,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 {
+	HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Local\\CpuHzTray.SingleInstance");
+	if(!hMutex) return 1;
+	if(GetLastError() == ERROR_ALREADY_EXISTS)
+	{
+		CloseHandle(hMutex);
+		return 0;
+	}
+
 	// Parse --diagnose-hz flag
 	{
 		int argc = 0;
@@ -375,9 +498,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 	if(!RunRedrawDecisionTests())
 	{
 		MessageBoxW(nullptr, L"RedrawDecision self-tests failed.", L"CpuHzTray", MB_OK | MB_ICONERROR);
+		CloseHandle(hMutex);
+		return 1;
+	}
+	if(!RunTrayIdentityTests())
+	{
+		MessageBoxW(nullptr, L"Tray identity self-tests failed.", L"CpuHzTray", MB_OK | MB_ICONERROR);
+		CloseHandle(hMutex);
 		return 1;
 	}
 #endif
+
+	g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
 
 	WNDCLASSEXW wc{};
 	wc.cbSize = sizeof(wc);
@@ -391,15 +523,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 		0, 0, 0, 0,
 		nullptr, nullptr, hInstance, nullptr
 	);
-	if(!hwnd) return 1;
-
-	// Add tray icon
-	g_nid = {};
-	g_nid.cbSize = sizeof(g_nid);
-	g_nid.hWnd = hwnd;
-	g_nid.uID = 1;
-	g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-	g_nid.uCallbackMessage = WMAPP_TRAY;
+	if(!hwnd) { CloseHandle(hMutex); return 1; }
 
 	// Initial icon
 	g_hIcon = g_renderer.Render(IconSpec{});
@@ -410,12 +534,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 			MessageBoxW(nullptr, err, L"CpuHzTray - Embedded font error", MB_OK | MB_ICONERROR);
 		else
 			MessageBoxW(nullptr, L"Failed to render tray icon.", L"CpuHzTray", MB_OK | MB_ICONERROR);
+		DestroyWindow(hwnd);
+		if(g_gdiplusToken) Gdiplus::GdiplusShutdown(g_gdiplusToken);
+		CloseHandle(hMutex);
 		return 1;
 	}
-	g_nid.hIcon = g_hIcon;
-	wcsncpy_s(g_nid.szTip, L"CPU Hz tray", _TRUNCATE);
 
-	Shell_NotifyIconW(NIM_ADD, &g_nid);
+	if(!AddTrayIcon(hwnd, g_hIcon, L"CPU Hz tray"))
+	{
+		SafeDestroyIcon(g_hIcon);
+		DestroyWindow(hwnd);
+		if(g_gdiplusToken) Gdiplus::GdiplusShutdown(g_gdiplusToken);
+		CloseHandle(hMutex);
+		return 1;
+	}
 
 	// First update immediately
 	UpdateTrayIcon(hwnd);
@@ -430,5 +562,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 	if(g_gdiplusToken)
 		Gdiplus::GdiplusShutdown(g_gdiplusToken);
 
+	CloseHandle(hMutex);
 	return 0;
 }
