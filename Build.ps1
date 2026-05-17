@@ -4,17 +4,30 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$solutionPath = Join-Path $repoRoot "CpuHzTrayCpp.sln"
-$buildDir = Join-Path $repoRoot "Build"
-$tempRoot = Join-Path $repoRoot ".build"
-$intermediateDir = Join-Path $tempRoot "obj"
+function Get-ScriptDirectory {
+    return Split-Path -Parent $PSCommandPath
+}
+
+function Write-Step {
+    param([string]$Message)
+    Write-Host "[Build] $Message" -ForegroundColor Yellow
+}
+
+function Write-Success {
+    param([string]$Message)
+    Write-Host "[Build] $Message" -ForegroundColor Green
+}
+
+function Write-ErrorStop {
+    param([string]$Message)
+    Write-Host "[Build] ERROR: $Message" -ForegroundColor Red
+    exit 1
+}
 
 function Remove-DirectoryTree {
-    param(
-        [string]$Path
-    )
+    param([string]$Path)
 
     if (-not (Test-Path $Path)) {
         return
@@ -29,9 +42,7 @@ function Remove-DirectoryTree {
 }
 
 function Clear-DirectoryContents {
-    param(
-        [string]$Path
-    )
+    param([string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
@@ -41,27 +52,95 @@ function Clear-DirectoryContents {
     Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-function Get-MSBuildPath {
-    $msbuildCommand = Get-Command msbuild.exe -ErrorAction SilentlyContinue
-    if ($msbuildCommand) {
-        return $msbuildCommand.Source
-    }
+function Find-MSBuild {
+    Write-Host "Searching for MSBuild..." -ForegroundColor Yellow
 
-    $vsWherePath = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-    if (Test-Path $vsWherePath) {
-        $installationPath = & $vsWherePath -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
-        if ($installationPath) {
-            return $installationPath
+    $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vsWhere) {
+        $instances = & $vsWhere -all -format json 2>&1 | ConvertFrom-Json
+        if ($instances) {
+            $sorted = $instances | Sort-Object -Property installationVersion -Descending
+            foreach ($instance in $sorted) {
+                foreach ($sub in @("MSBuild\Current\Bin\MSBuild.exe", "MSBuild\15.0\Bin\MSBuild.exe")) {
+                    $msbuild = Join-Path $instance.installationPath $sub
+                    if (Test-Path $msbuild) {
+                        Write-Host "  Found (vswhere): $msbuild" -ForegroundColor Green
+                        return $msbuild
+                    }
+                }
+            }
         }
     }
 
-    throw "MSBuild.exe was not found. Install Visual Studio Build Tools or Visual Studio with C++ build support."
+    $candidates = @(
+        "C:\Program Files\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
+        "C:\Program Files (x86)\MSBuild\14.0\Bin\MSBuild.exe",
+        "C:\WINDOWS\Microsoft.NET\Framework\v4.0.30319\MSBuild.exe"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            Write-Host "  Found (hardcoded): $candidate" -ForegroundColor Green
+            return $candidate
+        }
+    }
+
+    $command = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        Write-Host "  Found (PATH): $($command.Source)" -ForegroundColor Yellow
+        return $command.Source
+    }
+
+    throw "MSBuild.exe was not found. Install Visual Studio Build Tools or Visual Studio."
+}
+
+function Invoke-MSBuild {
+    param(
+        [Parameter(Mandatory)]
+        [string]$MsBuildPath,
+        [Parameter(Mandatory)]
+        [string]$ProjectPath,
+        [string]$Configuration = "Release",
+        [string]$Platform = "AnyCPU",
+        [string[]]$ExtraArgs
+    )
+
+    $msbuildArgs = @(
+        $ProjectPath
+        "/t:Build"
+        "/p:Configuration=$Configuration"
+        "/p:Platform=$Platform"
+        "/consoleloggerparameters:Summary"
+        "/noLogo"
+    )
+
+    if ($ExtraArgs) {
+        $msbuildArgs += $ExtraArgs
+    }
+
+    Write-Host "Building via $MsBuildPath" -ForegroundColor Cyan
+    $output = & $MsBuildPath @msbuildArgs 2>&1
+    $output | ForEach-Object { Write-Host $_ }
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "MSBuild exited with code $LASTEXITCODE. Full output above." -ForegroundColor Red
+        throw "Build failed with exit code $LASTEXITCODE"
+    }
 }
 
 function Remove-GeneratedArtifacts {
-    param(
-        [string]$RootPath
-    )
+    param([string]$RootPath)
 
     $directoryNames = @("obj", "ipch")
     $directories = Get-ChildItem -Path $RootPath -Directory -Recurse -Force -ErrorAction SilentlyContinue |
@@ -80,36 +159,59 @@ function Remove-GeneratedArtifacts {
     }
 }
 
+$ScriptDir = Get-ScriptDirectory
+$solutionPath = Join-Path $ScriptDir "CpuHzTrayCpp.sln"
+$buildDir = Join-Path $ScriptDir "Build"
+$tempRoot = Join-Path $ScriptDir ".build"
+$intermediateDir = Join-Path $tempRoot "obj"
+
+Write-Host "=== Building CpuHzTrayCpp ===" -ForegroundColor Cyan
+
 if (-not (Test-Path $solutionPath)) {
-    throw "Solution not found: $solutionPath"
+    Write-ErrorStop "Solution not found: $solutionPath"
 }
 
-$msbuildPath = Get-MSBuildPath
+$msbuildPath = Find-MSBuild
+Write-Step "Using MSBuild: $msbuildPath"
 
+Write-Step "Preparing Build folder..."
 Clear-DirectoryContents -Path $buildDir
 
+Write-Step "Cleaning previous intermediate files..."
 Remove-DirectoryTree -Path $tempRoot
 
-Remove-GeneratedArtifacts -RootPath $repoRoot
+Remove-GeneratedArtifacts -RootPath $ScriptDir
 New-Item -ItemType Directory -Path $intermediateDir -Force | Out-Null
 
-& $msbuildPath $solutionPath `
-    /t:Build `
-    /m `
-    /p:Configuration=$Configuration `
-    /p:Platform=$Platform `
-    /p:OutDir="$buildDir\" `
-    /p:IntDir="$intermediateDir\" `
-    /p:BaseIntermediateOutputPath="$tempRoot\" `
-    /verbosity:minimal
+try {
+    Write-Step "Building ($Configuration|$Platform)..."
+    & $msbuildPath $solutionPath `
+        /t:Build `
+        /m `
+        "/p:Configuration=$Configuration" `
+        "/p:Platform=$Platform" `
+        "/p:OutDir=$buildDir\" `
+        "/p:IntDir=$intermediateDir\" `
+        "/p:BaseIntermediateOutputPath=$tempRoot\" `
+        /verbosity:minimal
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Build failed with exit code $LASTEXITCODE."
+    if ($LASTEXITCODE -ne 0) {
+        Write-ErrorStop "Build failed with exit code $LASTEXITCODE."
+    }
+
+    Write-Step "Cleaning up..."
+    Remove-DirectoryTree -Path $tempRoot
+    Remove-GeneratedArtifacts -RootPath $ScriptDir
+
+    Write-Step "Removing PDB files from Build folder..."
+    Get-ChildItem -Path $buildDir -Filter "*.pdb" -Recurse -File | Remove-Item -Force -ErrorAction SilentlyContinue
+
+    Write-Step "Removing x64 intermediate folder..."
+    Remove-DirectoryTree -Path (Join-Path $ScriptDir "x64")
+
+    Write-Success "=== Build completed successfully ==="
+    Write-Host "[Build] Artifacts: $buildDir" -ForegroundColor Cyan
 }
-
-Remove-DirectoryTree -Path $tempRoot
-
-Remove-GeneratedArtifacts -RootPath $repoRoot
-
-Write-Host "Build completed successfully."
-Write-Host "Artifacts: $buildDir"
+catch {
+    Write-ErrorStop $_.Exception.Message
+}
