@@ -1,6 +1,6 @@
 & { `
 	$ErrorActionPreference='Stop'; `
-	$FontPath='R:\fonts\itty\itty.ttf'; `
+	$FontPath='C:\Docs\Repo\github_opensource_projects\CpuHzTray\CpuHzTray\Fonts\embedded.ttf'; `
 	$ScriptDir=$PSScriptRoot; `
 	if([string]::IsNullOrWhiteSpace($ScriptDir)){ throw 'PSScriptRoot is empty. Script must be run from a file.'; }; `
 	$TargetPath=Join-Path $ScriptDir 'Fonts\embedded.ttf'; `

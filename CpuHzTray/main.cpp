@@ -273,8 +273,14 @@ static void UpdateTrayIcon(HWND hwnd)
 
 	// Push history and track throttle counter.
 	static int s_samplesSinceIconRedraw = 0;
+	static bool s_historySeededWithBase = false;
 	if(reading.ok)
 	{
+		if(!s_historySeededWithBase && reading.baseMHz > 0.0)
+		{
+			g_historyMHz.Push(reading.baseMHz);
+			s_historySeededWithBase = true;
+		}
 		g_historyMHz.Push(reading.avgMHz);
 		++s_samplesSinceIconRedraw;
 	}

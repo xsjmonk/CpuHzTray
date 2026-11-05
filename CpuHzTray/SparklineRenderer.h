@@ -34,15 +34,15 @@ struct SparklineStyle
 
 namespace SparklineDefaults
 {
-	inline constexpr double kPercentileMedian = 0.50;
 	// Avoid division by zero when the recent samples are identical.
 	inline constexpr double kMinimumDynamicRangeMhz = 1e-6;
 	inline constexpr BYTE kGradientAlpha = 255;
 }
 
-// Draw a baseline-centered smooth line curve sparkline into plotRc on the given HDC.
-// samples must be ordered oldest->newest.
-// baseMHz is the baseline value; if baseMHz <= 0, median(samples) is used.
+// Draw a smooth line curve sparkline into plotRc on the given HDC.
+// samples must be ordered oldest->newest (first sample is typically base MHz).
+// Vertical scale uses only sample min/max. baseMHz is used for the color
+// boundary only, not for vertical normalization.
 void DrawAreaSparklineGdiPlus(
 	HDC hdc,
 	const RECT& plotRc,
