@@ -1,6 +1,6 @@
 & { `
 	$ErrorActionPreference='Stop'; `
-	$FontPath='R:\fonts\mini_pixel_7\mini_pixel-7.ttf'; `
+	$FontPath='R:\fonts\itty\itty.ttf'; `
 	$ScriptDir=$PSScriptRoot; `
 	if([string]::IsNullOrWhiteSpace($ScriptDir)){ throw 'PSScriptRoot is empty. Script must be run from a file.'; }; `
 	$TargetPath=Join-Path $ScriptDir 'Fonts\embedded.ttf'; `

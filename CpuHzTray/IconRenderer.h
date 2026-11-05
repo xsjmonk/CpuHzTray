@@ -5,10 +5,10 @@
 
 #include "HistoryBuffer.h"
 
-// User-editable font configuration (embedded RCDATA font)
-// 1) Put your .ttf at CpuHzTray/Fonts/embedded.ttf (project includes it as RCDATA)
-// 2) Set this to the font *family name* reported by the PowerShell script.
-inline constexpr wchar_t kEmbeddedFontFamilyName[] = L"Mini Pixel-7";
+// Embedded font configuration (embedded RCDATA font).
+// The family name is extracted from the embedded font once during renderer
+// initialization; do not duplicate it as a source-code constant.
+// Put the font at CpuHzTray/Fonts/embedded.ttf (project includes it as RCDATA).
 
 // Layout / text placement tuning (user-editable)
 // - Plot height is ratio of tray icon height.
@@ -82,5 +82,6 @@ private:
 	mutable bool initialized_ = false;
 	mutable HANDLE fontMemHandle_ = nullptr; // RemoveFontMemResourceEx in dtor
 	mutable HFONT hFont_ = nullptr;
+	mutable std::wstring embeddedFontFamilyName_;
 	mutable std::wstring fontError_;
 };

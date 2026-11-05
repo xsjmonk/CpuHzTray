@@ -429,6 +429,33 @@ static bool EnsureEmbeddedFont(Gdiplus::PrivateFontCollection*& outPfc)
 	return ok;
 }
 
+// Extract the family name from the same private collection that will render
+// the text. This is intentionally called once by EnsureInit(); later renders
+// reuse IconRenderer::embeddedFontFamilyName_ instead of rediscovering it.
+static bool ExtractEmbeddedFontFamilyName(
+	const Gdiplus::PrivateFontCollection& pfc,
+	std::wstring& outFamilyName)
+{
+	if(pfc.GetFamilyCount() <= 0)
+		return false;
+
+	Gdiplus::FontFamily family;
+	INT familyCount = 0;
+	if(pfc.GetFamilies(1, &family, &familyCount) != Gdiplus::Ok
+		|| familyCount <= 0)
+	{
+		return false;
+	}
+
+	WCHAR familyName[LF_FACESIZE]{};
+	family.GetFamilyName(familyName, LANG_NEUTRAL);
+	if(familyName[0] == L'\0')
+		return false;
+
+	outFamilyName.assign(familyName);
+	return true;
+}
+
 void IconRenderer::SetFontError(const std::wstring& msg) const
 {
 	if(fontError_.empty())
@@ -499,8 +526,8 @@ void IconRenderer::EnsureInit() const
 	// Step 6.1: Explicit validation with explicit errors (no guessing / no fallback).
 	// 1) RCDATA exists and non-empty.
 	// 2) AddFontMemResourceEx registers at least one font.
-	// 3) The configured family name exists in the embedded font.
-	// 4) CreateFontIndirectW succeeds for that family name.
+	// 3) Extract and cache the family name from the embedded font.
+	// 4) CreateFontIndirectW succeeds for that extracted family name.
 	{
 		auto hMod = GetModuleHandleW(nullptr);
 		if(!hMod) { SetFontError(L"GetModuleHandleW failed."); return; }
@@ -530,27 +557,22 @@ void IconRenderer::EnsureInit() const
 		SetFontError(L"Embedded font bytes loaded but GDI+ PrivateFontCollection has 0 families. (AddMemoryFont produced no families.)");
 		return;
 	}
-	// Validate the configured family name against the embedded font.
+	if(!ExtractEmbeddedFontFamilyName(*pfc, embeddedFontFamilyName_))
 	{
-		Gdiplus::FontFamily ff(kEmbeddedFontFamilyName, pfc);
-		if(!ff.IsAvailable())
-		{
-			std::wstring msg = L"Embedded font family name not found inside embedded.ttf. Configured kEmbeddedFontFamilyName='";
-			msg += kEmbeddedFontFamilyName;
-			msg += L"'. Use font_name.ps1 to list the embedded font family name and update IconRenderer.h.";
-			SetFontError(msg);
-			return;
-		}
+		SetFontError(L"Embedded font family name could not be extracted from the embedded font.");
+		return;
 	}
-	wcscpy_s(lf.lfFaceName, kEmbeddedFontFamilyName);
+
+	wcscpy_s(lf.lfFaceName, embeddedFontFamilyName_.c_str());
 
 	hFont_ = CreateFontIndirectW(&lf);
 
 	if(!hFont_)
 	{
-		// Do not fallback: embedded font must be available (correct family name).
+		// Do not fallback: the embedded font must be available by its extracted
+		// family name.
 		std::wstring msg = L"CreateFontIndirectW failed for embedded font family name '";
-		msg += kEmbeddedFontFamilyName;
+		msg += embeddedFontFamilyName_;
 		msg += L"'.";
 		SetFontError(msg);
 		return;
@@ -679,11 +701,11 @@ HICON IconRenderer::Render(const IconSpec& spec, UINT dpiHint) const
 		g.SetTextRenderingHint(Gdiplus::TextRenderingHintSingleBitPerPixelGridFit);
 
 		// Use embedded font only. No fallback.
-		Gdiplus::FontFamily ff(kEmbeddedFontFamilyName, pfc);
+		Gdiplus::FontFamily ff(embeddedFontFamilyName_.c_str(), pfc);
 		if(!ff.IsAvailable())
 		{
-			std::wstring msg = L"Embedded font family name not found at render time. Configured kEmbeddedFontFamilyName='";
-			msg += kEmbeddedFontFamilyName;
+			std::wstring msg = L"Embedded font family name not found at render time. Cached family name='";
+			msg += embeddedFontFamilyName_;
 			msg += L"'.";
 			SetFontError(msg);
 			SelectObject(hdc, oldBmp);
