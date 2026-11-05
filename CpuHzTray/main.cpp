@@ -310,8 +310,8 @@ static void UpdateTrayIcon(HWND hwnd)
 	bool tooltipChanged = (newTooltip != g_nid.szTip);
 
 	// Track display key change.
-	wchar_t displayKey[16]{};
-	swprintf_s(displayKey, L"%.2f", ToGhz(reading.ok ? reading.avgMHz : 0.0));
+	wchar_t displayKey[kTrayTextMaxChars]{};
+	swprintf_s(displayKey, kTrayGhzFormat, ToGhz(reading.ok ? reading.avgMHz : 0.0));
 
 	static std::wstring s_lastDisplayKey;
 	bool displayKeyChanged = (displayKey != s_lastDisplayKey);
@@ -338,6 +338,7 @@ static void UpdateTrayIcon(HWND hwnd)
 	if(decision.redrawIcon)
 	{
 		IconSpec spec{};
+		spec.displayText = displayKey;
 		if(reading.ok)
 		{
 			spec.ghz = ToGhz(reading.avgMHz);
@@ -353,7 +354,7 @@ static void UpdateTrayIcon(HWND hwnd)
 			spec.historyMHz = nullptr;
 		}
 
-		HICON next = g_renderer.Render(spec);
+		HICON next = g_renderer.Render(spec, IconRenderer::NormalizeTrayDpi(GetDpiForWindow(hwnd)));
 		if(!next)
 		{
 			static bool s_shown = false;
@@ -423,6 +424,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 			UpdateTrayIcon(hwnd);
 		return 0;
 
+	case WM_DPICHANGED:
+		UpdateTrayIcon(hwnd);
+		return 0;
+
 	case WM_QUERYENDSESSION:
 		RemoveTrayIcon();
 		return TRUE;
@@ -462,6 +467,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 {
+	HMODULE user32 = GetModuleHandleW(L"user32.dll");
+	if(user32)
+	{
+		using SetCtxFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+		auto setCtx = (SetCtxFn)GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+		if(setCtx)
+			setCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+	}
+
 	HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Local\\CpuHzTray.SingleInstance");
 	if(!hMutex) return 1;
 	if(GetLastError() == ERROR_ALREADY_EXISTS)
@@ -526,7 +540,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 	if(!hwnd) { CloseHandle(hMutex); return 1; }
 
 	// Initial icon
-	g_hIcon = g_renderer.Render(IconSpec{});
+	g_hIcon = g_renderer.Render(IconSpec{}, IconRenderer::NormalizeTrayDpi(GetDpiForWindow(hwnd)));
 	if(!g_hIcon)
 	{
 		auto err = g_renderer.GetFontError();

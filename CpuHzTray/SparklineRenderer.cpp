@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <vector>
 #include <cmath>
+#include <limits>
 
 #include <objidl.h>
 #include <gdiplus.h>
@@ -80,26 +81,46 @@ void DrawAreaSparklineGdiPlus(
 	for(int i = 0; i < sampleCount; ++i) vals.push_back(samples[i]);
 
 	std::vector<double> sorted = vals;
-	double p10 = Percentile(sorted, 0.10);
-	double p90 = Percentile(sorted, 0.90);
-	double median = Percentile(sorted, 0.50);
+	double median = Percentile(sorted, SparklineDefaults::kPercentileMedian);
 
 	double base = (baseMHz > 0.0) ? baseMHz : median;
 
-	// Symmetric range around base so the baseline sits on the icon center line.
-	// Enforce minimum full range: max(fixed, medianPct*median).
-	double minRange = std::max(style.minRangeMhzFixed, std::abs(median) * style.minRangeMedianPct);
-	double maxDev = std::max(std::max(0.0, p90 - base), std::max(0.0, base - p10));
-	double halfRange = std::max(maxDev, minRange * 0.5);
-	if(halfRange < 1e-6) halfRange = 1.0;
+	double aboveMin = std::numeric_limits<double>::max();
+	double aboveMax = std::numeric_limits<double>::lowest();
+	double belowMin = std::numeric_limits<double>::max();
+	double belowMax = std::numeric_limits<double>::lowest();
+	for(const double v : vals)
+	{
+		if(v > base)
+		{
+			aboveMin = std::min(aboveMin, v);
+			aboveMax = std::max(aboveMax, v);
+		}
+		else if(v < base)
+		{
+			belowMin = std::min(belowMin, v);
+			belowMax = std::max(belowMax, v);
+		}
+	}
 
-	// Apply extra visual gain for small plot regions.
-	// Keep it bounded to avoid extreme amplification.
-	double gain = style.visualGain;
-	if(gain < 1.0) gain = 1.0;
-	if(gain > 2.5) gain = 2.5;
-	halfRange = halfRange / gain;
+	const bool hasAboveSamples = aboveMin != std::numeric_limits<double>::max();
+	const bool hasBelowSamples = belowMin != std::numeric_limits<double>::max();
+	const double aboveRange = hasAboveSamples
+		? std::max(aboveMax - aboveMin, SparklineDefaults::kMinimumDynamicRangeMhz)
+		: SparklineDefaults::kMinimumDynamicRangeMhz;
+	const double belowRange = hasBelowSamples
+		? std::max(belowMax - belowMin, SparklineDefaults::kMinimumDynamicRangeMhz)
+		: SparklineDefaults::kMinimumDynamicRangeMhz;
 
+	// Keep a side's first point just inside its color half. This prevents an
+	// above-base point from landing on the integer baseline clip row and being
+	// painted with the below-base pen.
+	const double sideInset = std::min(0.5, 0.5 / std::max(halfH, 1.0f));
+
+	// The base remains the red/blue classification boundary. Once a sample is
+	// classified, normalize against that side's recent min/max rather than
+	// against the distance from the base; otherwise a nearby 10 MHz fluctuation
+	// is still compressed by a base that is hundreds of MHz away.
 	// Build smoothed curve points (oldest->newest), mapped around centerY.
 	std::vector<Gdiplus::PointF> pts;
 	pts.reserve((size_t)sampleCount);
@@ -107,7 +128,25 @@ void DrawAreaSparklineGdiPlus(
 	for(int i = 0; i < sampleCount; ++i)
 	{
 		double v = vals[(size_t)i];
-		double d = (v - base) / halfRange;
+		double d = 0.0;
+		if(v > base && hasAboveSamples)
+		{
+			const double normalized = (v - aboveMin) / aboveRange;
+			d = sideInset + normalized * (1.0 - sideInset);
+		}
+		else if(v < base && hasBelowSamples)
+		{
+			const double normalized = (belowMax - v) / belowRange;
+			d = -(sideInset + normalized * (1.0 - sideInset));
+		}
+		else if(v > base)
+		{
+			d = 0.5;
+		}
+		else if(v < base)
+		{
+			d = -0.5;
+		}
 		d = ClampD(d, -1.0, 1.0);
 
 		float x = (float)left + dx * (float)i;
@@ -154,10 +193,10 @@ void DrawAreaSparklineGdiPlus(
 	buildCurvePath(curvePath, pts);
 
 	// Create vertical gradients: red (top -> baseline), blue (baseline -> bottom).
-	Gdiplus::Color aboveTop = MakeArgb(255, style.aboveTopRgb);
-	Gdiplus::Color aboveBase = MakeArgb(255, style.aboveBaseRgb);
-	Gdiplus::Color belowBase = MakeArgb(255, style.belowBaseRgb);
-	Gdiplus::Color belowBottom = MakeArgb(255, style.belowBottomRgb);
+	Gdiplus::Color aboveTop = MakeArgb(SparklineDefaults::kGradientAlpha, style.aboveTopRgb);
+	Gdiplus::Color aboveBase = MakeArgb(SparklineDefaults::kGradientAlpha, style.aboveBaseRgb);
+	Gdiplus::Color belowBase = MakeArgb(SparklineDefaults::kGradientAlpha, style.belowBaseRgb);
+	Gdiplus::Color belowBottom = MakeArgb(SparklineDefaults::kGradientAlpha, style.belowBottomRgb);
 
 	// Vertical gradients with a hard turning point at the baseline (centerY).
 	// Above: baseline -> top becomes more red.

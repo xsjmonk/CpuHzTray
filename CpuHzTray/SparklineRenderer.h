@@ -30,15 +30,15 @@ struct SparklineStyle
 	// Lower tension => smoother curve. (0.0..1.0)
 	float curveTension = 0.45f;
 
-	// Stronger gain settings
-	// When the observed window range is tight, expand visual contrast around the base.
-	double minRangeMhzFixed = 200.0;     // fixed minimum full-range
-	double minRangeMedianPct = 0.05;     // percent of median (as MHz)
-
-	// Extra visual gain multiplier for tiny tray plots (16px height).
-	// >1.0 amplifies deviations around the baseline.
-	double visualGain = 1.75;
 };
+
+namespace SparklineDefaults
+{
+	inline constexpr double kPercentileMedian = 0.50;
+	// Avoid division by zero when the recent samples are identical.
+	inline constexpr double kMinimumDynamicRangeMhz = 1e-6;
+	inline constexpr BYTE kGradientAlpha = 255;
+}
 
 // Draw a baseline-centered smooth line curve sparkline into plotRc on the given HDC.
 // samples must be ordered oldest->newest.
