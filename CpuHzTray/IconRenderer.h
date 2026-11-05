@@ -8,7 +8,7 @@
 // User-editable font configuration (embedded RCDATA font)
 // 1) Put your .ttf at CpuHzTray/Fonts/embedded.ttf (project includes it as RCDATA)
 // 2) Set this to the font *family name* reported by the PowerShell script.
-inline constexpr wchar_t kEmbeddedFontFamilyName[] = L"Pixel Arial 11";
+inline constexpr wchar_t kEmbeddedFontFamilyName[] = L"Mini Pixel-7";
 
 // Layout / text placement tuning (user-editable)
 // - Plot height is ratio of tray icon height.
@@ -20,6 +20,8 @@ inline constexpr float kTextBottomSafetyPx = 0.0f;
 inline constexpr int kTextFitInsetPx = 1;
 // Faux-bold / grid-fit can extend past path.GetBounds(); reserve this when fitting.
 inline constexpr int kTextInkBleedPx = 1;
+// Reserve one final pixel between adjacent character cells.
+inline constexpr float kTextCharacterGapPx = 1.0f;
 
 // Tray icon layout (used by IconRenderer)
 inline constexpr int kIconMinSizePx = 16;

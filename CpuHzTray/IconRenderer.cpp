@@ -31,7 +31,9 @@ Text-rendering maintenance rules:
      applied only after that candidate has been selected.
   3. Pixel-grid snapping is a placement/rasterization step only. It must not
      be included in the size search or be allowed to reduce the chosen em.
-  4. BuildPixelSnappedTextPath returns a path already positioned in icon
+  4. Character spacing is part of the measured layout. The same gap must be
+     included when fitting the text and when placing the final glyph cells.
+  5. BuildPixelSnappedTextPath returns a path already positioned in icon
      coordinates. It applies scale and translation exactly once. The caller
      must fill that path directly and must not transform it again.
 */
@@ -41,10 +43,8 @@ Text-rendering maintenance rules:
 // line/layout metrics that vary significantly between font families.
 static int ResolveTrayFontStyle(const Gdiplus::FontFamily&)
 {
-	// Beautiful Police Officer contains a regular face only. Request Bold
-	// explicitly so GDI+ applies its bold style instead of silently selecting
-	// the regular face. If a future embedded font contains a native bold face,
-	// the same request selects that face.
+	// Request Bold explicitly. This also asks GDI+ to synthesize the bold
+	// treatment when a pixel font ships with a regular face only.
 	return Gdiplus::FontStyleBold;
 }
 
@@ -119,7 +119,8 @@ static bool MeasurePerCharacterText(
 	outBounds = Gdiplus::RectF(
 		0.0f,
 		top,
-		outCellWidth * (float)textLen,
+		outCellWidth * (float)textLen
+			+ kTextCharacterGapPx * (float)std::max(0, textLen - 1),
 		bottom - top);
 	return outBounds.Width > 0.0f && outBounds.Height > 0.0f;
 }
@@ -175,10 +176,11 @@ static bool BuildPixelSnappedTextPath(
 			return false;
 		}
 
+		const float scaledCellWidth =
+			layout.characterCellWidth * layout.horizontalScale;
 		const float cellLeft = layout.originX
-			+ (float)i * layout.characterCellWidth * layout.horizontalScale;
-		const float cellRight = layout.originX
-			+ (float)(i + 1) * layout.characterCellWidth * layout.horizontalScale;
+			+ (float)i * (scaledCellWidth + kTextCharacterGapPx);
+		const float cellRight = cellLeft + scaledCellWidth;
 		const float snappedCellLeft = (float)std::lround(cellLeft);
 		const float snappedCellRight = (float)std::lround(cellRight);
 		const float snappedCellWidth = std::max(1.0f, snappedCellRight - snappedCellLeft);
@@ -243,12 +245,19 @@ static bool TryPerCharacterLayout(
 	if(bounds.Height > usableHeight)
 		return false;
 
-	// Preserve the font's normal width when possible. If the actual summed
-	// glyph width is too large, compress only horizontally so vertical size
-	// can still use the available block height.
-	const float naturalWidth = characterCellWidth * (float)textLen;
-	const float horizontalScale = std::min(1.0f, usableWidth / naturalWidth);
-	const float scaledWidth = naturalWidth * horizontalScale;
+	// Preserve the font's normal width when possible. Keep the requested gap
+	// as a final-pixel gap, and compress only glyph cells if the complete
+	// layout is too wide.
+	const float naturalGlyphWidth = characterCellWidth * (float)textLen;
+	const float characterGapWidth =
+		kTextCharacterGapPx * (float)std::max(0, textLen - 1);
+	const float availableGlyphWidth = usableWidth - characterGapWidth;
+	if(availableGlyphWidth <= 0.0f)
+		return false;
+	const float horizontalScale =
+		std::min(1.0f, availableGlyphWidth / naturalGlyphWidth);
+	const float scaledWidth =
+		naturalGlyphWidth * horizontalScale + characterGapWidth;
 	const float contentLeft = regionLeft + (regionWidth - scaledWidth) / 2.0f;
 	const float centeredY = regionTop + (regionHeight - bounds.Height) / 2.0f - bounds.Y;
 	float originX = static_cast<float>(std::lround(contentLeft));
