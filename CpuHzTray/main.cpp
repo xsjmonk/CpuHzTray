@@ -21,6 +21,7 @@ static UINT g_taskbarCreatedMsg = 0;
 
 static CpuFrequency g_cpu;
 static IconRenderer g_renderer;
+static DpiFont g_dpiFont;
 static RingBufferD<30> g_historyMHz;
 
 static ULONG_PTR g_gdiplusToken = 0;
@@ -31,6 +32,17 @@ static constexpr GUID kTrayIconGuid =
 static double ToGhz(double mhz) { return mhz / 1000.0; }
 
 static constexpr bool kRedrawEverySampleForSparkline = false;
+
+static HICON RenderIconForWindow(HWND hwnd, const IconSpec& spec)
+{
+	const UINT dpi = DpiFont::NormalizeDpi(GetDpiForWindow(hwnd));
+	TextFontSelection font{};
+	if(!g_dpiFont.Select(dpi, font))
+		return nullptr;
+
+	const int iconSize = DpiFont::GetTrayIconPixelSizeForDpi(dpi);
+	return g_renderer.Render(spec, iconSize, font);
+}
 
 struct RedrawDecisionInput
 {
@@ -360,7 +372,7 @@ static void UpdateTrayIcon(HWND hwnd)
 			spec.historyMHz = nullptr;
 		}
 
-		HICON next = g_renderer.Render(spec, IconRenderer::NormalizeTrayDpi(GetDpiForWindow(hwnd)));
+		HICON next = RenderIconForWindow(hwnd, spec);
 		if(!next)
 		{
 			static bool s_shown = false;
@@ -368,6 +380,8 @@ static void UpdateTrayIcon(HWND hwnd)
 			{
 				s_shown = true;
 				auto err = g_renderer.GetFontError();
+				if(!err || !*err)
+					err = g_dpiFont.GetError();
 				if(err && *err)
 				{
 					MessageBoxW(hwnd, err, L"CpuHzTray - Embedded font error", MB_OK | MB_ICONERROR);
@@ -546,10 +560,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 	if(!hwnd) { CloseHandle(hMutex); return 1; }
 
 	// Initial icon
-	g_hIcon = g_renderer.Render(IconSpec{}, IconRenderer::NormalizeTrayDpi(GetDpiForWindow(hwnd)));
+	g_hIcon = RenderIconForWindow(hwnd, IconSpec{});
 	if(!g_hIcon)
 	{
 		auto err = g_renderer.GetFontError();
+		if(!err || !*err)
+			err = g_dpiFont.GetError();
 		if(err && *err)
 			MessageBoxW(nullptr, err, L"CpuHzTray - Embedded font error", MB_OK | MB_ICONERROR);
 		else

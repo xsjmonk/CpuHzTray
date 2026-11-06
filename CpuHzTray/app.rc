@@ -5,3 +5,4 @@
 
 // Private font embedded into the exe (no deployment copy needed)
 IDR_FONT_EMBEDDED RCDATA "Fonts\embedded.ttf"
+IDR_FONT_EMBEDDED_HIGH_DPI RCDATA "Fonts\embedded_highdpi.ttf"

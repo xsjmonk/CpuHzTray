@@ -3,12 +3,8 @@
 
 #include <string>
 
+#include "DpiFont.h"
 #include "HistoryBuffer.h"
-
-// Embedded font configuration (embedded RCDATA font).
-// The family name is extracted from the embedded font once during renderer
-// initialization; do not duplicate it as a source-code constant.
-// Put the font at CpuHzTray/Fonts/embedded.ttf (project includes it as RCDATA).
 
 // Layout / text placement tuning (user-editable)
 // - Plot height is ratio of tray icon height.
@@ -20,7 +16,7 @@ inline constexpr float kTextBottomSafetyPx = 0.0f;
 inline constexpr int kTextFitInsetPx = 1;
 // Faux-bold / grid-fit can extend past path.GetBounds(); reserve this when fitting.
 inline constexpr int kTextInkBleedPx = 1;
-// Reserve one final pixel between adjacent character cells.
+// Reserve one final pixel between adjacent character cells, including symbols.
 inline constexpr float kTextCharacterGapPx = 1.0f;
 
 // Tray icon layout (used by IconRenderer)
@@ -65,23 +61,16 @@ class IconRenderer
 {
 public:
 	IconRenderer();
-	~IconRenderer();
+	~IconRenderer() = default;
 
-	HICON Render(const IconSpec& spec, UINT dpi = 0) const; // caller owns; dpi=0 → auto-detect
-
-	// Tray icon pixel size for 100% / 125% / 150% (96 / 120 / 144 DPI) and other scales.
-	static UINT NormalizeTrayDpi(UINT dpi);
-	static int GetTrayIconPixelSizeForDpi(UINT dpi);
+	HICON Render(
+		const IconSpec& spec,
+		int iconSize,
+		const TextFontSelection& font) const; // caller owns
 	const wchar_t* GetFontError() const;
 
 private:
-	void EnsureInit() const;
-	bool LoadFontFromResource() const;
 	void SetFontError(const std::wstring& msg) const;
 
-	mutable bool initialized_ = false;
-	mutable HANDLE fontMemHandle_ = nullptr; // RemoveFontMemResourceEx in dtor
-	mutable HFONT hFont_ = nullptr;
-	mutable std::wstring embeddedFontFamilyName_;
 	mutable std::wstring fontError_;
 };

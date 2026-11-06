@@ -22,6 +22,9 @@
     <ClCompile Include="CpuFrequency.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="DpiFont.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="IconRenderer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -35,6 +38,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CpuFrequency.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DpiFont.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="IconRenderer.h">

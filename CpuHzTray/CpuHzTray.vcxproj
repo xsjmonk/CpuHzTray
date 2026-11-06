@@ -90,12 +90,14 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="CpuFrequency.cpp" />
+    <ClCompile Include="DpiFont.cpp" />
     <ClCompile Include="IconRenderer.cpp" />
     <ClCompile Include="SparklineRenderer.cpp" />
   </ItemGroup>
 
   <ItemGroup>
     <ClInclude Include="CpuFrequency.h" />
+    <ClInclude Include="DpiFont.h" />
     <ClInclude Include="IconRenderer.h" />
     <ClInclude Include="HistoryBuffer.h" />
     <ClInclude Include="SparklineRenderer.h" />
