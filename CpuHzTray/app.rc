@@ -6,3 +6,10 @@
 // Private font embedded into the exe (no deployment copy needed)
 IDR_FONT_EMBEDDED RCDATA "Fonts\embedded.ttf"
 IDR_FONT_EMBEDDED_HIGH_DPI RCDATA "Fonts\embedded_highdpi.ttf"
+IDR_FONT_KOLLECTIONBITMAP RCDATA "Fonts\kollectionbitmap.ttf"
+IDR_FONT_PIXELZONE_E4MV4 RCDATA "Fonts\Pixelzone-E4MV4.ttf"
+IDR_FONT_16X8PXL_SANS RCDATA "Fonts/16x8pxl-sans.ttf"
+IDR_FONT_FLEXI_IBM_VGA_TRUE RCDATA "Fonts\Flexi_IBM_VGA_True.ttf"
+IDR_FONT_READABLE9X4 RCDATA "Fonts\Readable9x4.ttf"
+IDR_FONT_PIXTALL RCDATA "Fonts\PixTall.ttf"
+IDR_FONT_PIXEL_MILLENNIUM RCDATA "Fonts\Pixel_Millennium.ttf"

@@ -25,6 +25,9 @@
     <ClCompile Include="DpiFont.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="FontIni.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="IconRenderer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -41,6 +44,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="DpiFont.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="FontIni.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="IconRenderer.h">
@@ -61,10 +67,37 @@
     <ResourceCompile Include="app.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
+    <None Include="CpuHzTray.ini.sample">
+      <Filter>Resource Files</Filter>
+    </None>
     <None Include="app.ico">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="Fonts\UniversCnBold.ttf">
+    <None Include="Fonts\embedded.ttf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Fonts\embedded_highdpi.ttf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Fonts\kollectionbitmap.ttf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Fonts\Pixelzone-E4MV4.ttf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Fonts\16x8pxl-sans.ttf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Fonts\Flexi_IBM_VGA_True.ttf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Fonts\Readable9x4.ttf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Fonts\PixTall.ttf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Fonts\Pixel_Millennium.ttf">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>

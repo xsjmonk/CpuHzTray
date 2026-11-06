@@ -14,8 +14,6 @@ inline constexpr float kTextBottomMarginPx = 0.0f;
 inline constexpr float kTextBottomSafetyPx = 0.0f;
 // Single inset from the text RECT edges (fit box). Ink bleed is accounted separately in layout.
 inline constexpr int kTextFitInsetPx = 1;
-// Faux-bold / grid-fit can extend past path.GetBounds(); reserve this when fitting.
-inline constexpr int kTextInkBleedPx = 1;
 // Reserve one final pixel between adjacent character cells, including symbols.
 inline constexpr float kTextCharacterGapPx = 1.0f;
 

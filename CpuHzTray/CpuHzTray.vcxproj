@@ -91,6 +91,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="CpuFrequency.cpp" />
     <ClCompile Include="DpiFont.cpp" />
+    <ClCompile Include="FontIni.cpp" />
     <ClCompile Include="IconRenderer.cpp" />
     <ClCompile Include="SparklineRenderer.cpp" />
   </ItemGroup>
@@ -98,6 +99,7 @@
   <ItemGroup>
     <ClInclude Include="CpuFrequency.h" />
     <ClInclude Include="DpiFont.h" />
+    <ClInclude Include="FontIni.h" />
     <ClInclude Include="IconRenderer.h" />
     <ClInclude Include="HistoryBuffer.h" />
     <ClInclude Include="SparklineRenderer.h" />
@@ -111,7 +113,16 @@
 
   <ItemGroup>
     <None Include="app.ico" />
-    <None Include="Fonts\UniversCnBold.ttf" />
+    <None Include="CpuHzTray.ini.sample" />
+    <None Include="Fonts\embedded.ttf" />
+    <None Include="Fonts\embedded_highdpi.ttf" />
+    <None Include="Fonts\kollectionbitmap.ttf" />
+    <None Include="Fonts\Pixelzone-E4MV4.ttf" />
+    <None Include="Fonts\16x8pxl-sans.ttf" />
+    <None Include="Fonts\Flexi_IBM_VGA_True.ttf" />
+    <None Include="Fonts\Readable9x4.ttf" />
+    <None Include="Fonts\PixTall.ttf" />
+    <None Include="Fonts\Pixel_Millennium.ttf" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

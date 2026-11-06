@@ -7,12 +7,30 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <vector>
 
 namespace
 {
 constexpr UINT kDefaultDpi = 96;
+
+struct FontResourceDefinition
+{
+	int resourceId;
+	const wchar_t* fileStem;
+};
+
+constexpr FontResourceDefinition kFontResources[] = {
+	{IDR_FONT_EMBEDDED, L"embedded"},
+	{IDR_FONT_EMBEDDED_HIGH_DPI, L"embedded_highdpi"},
+	{IDR_FONT_KOLLECTIONBITMAP, L"kollectionbitmap"},
+	{IDR_FONT_PIXELZONE_E4MV4, L"Pixelzone-E4MV4"},
+	{IDR_FONT_16X8PXL_SANS, L"16x8pxl-sans"},
+	{IDR_FONT_FLEXI_IBM_VGA_TRUE, L"Flexi_IBM_VGA_True"},
+	{IDR_FONT_READABLE9X4, L"Readable9x4"},
+	{IDR_FONT_PIXTALL, L"PixTall"},
+	{IDR_FONT_PIXEL_MILLENNIUM, L"Pixel_Millennium"}};
 
 bool LoadFontIntoPrivateCollection(
 	HMODULE hMod,
@@ -66,19 +84,40 @@ bool ExtractFamilyName(
 	outFamilyName.assign(familyName);
 	return true;
 }
+
+std::wstring GetIniPath()
+{
+	wchar_t modulePath[MAX_PATH]{};
+	const DWORD length = GetModuleFileNameW(
+		nullptr,
+		modulePath,
+		static_cast<DWORD>(std::size(modulePath)));
+	if(length == 0 || length >= std::size(modulePath))
+		return {};
+
+	std::wstring path(modulePath, length);
+	const size_t separator = path.find_last_of(L"\\/");
+	if(separator == std::wstring::npos)
+		return L"CpuHzTray.ini";
+	return path.substr(0, separator + 1) + L"CpuHzTray.ini";
+}
 }
 
 struct DpiFont::Impl
 {
+	struct EmbeddedFont
+	{
+		std::wstring fileStem;
+		std::wstring familyName;
+		std::vector<BYTE> fontBytes;
+		std::unique_ptr<Gdiplus::PrivateFontCollection> collection;
+	};
+
 	bool initialized = false;
 	bool ok = false;
 	std::wstring error;
-	std::wstring normalFamilyName;
-	std::wstring highDpiFamilyName;
-	std::vector<BYTE> normalFontBytes;
-	std::vector<BYTE> highDpiFontBytes;
-	std::unique_ptr<Gdiplus::PrivateFontCollection> normalCollection;
-	std::unique_ptr<Gdiplus::PrivateFontCollection> highDpiCollection;
+	FontIni ini;
+	std::vector<std::unique_ptr<EmbeddedFont>> fonts;
 };
 
 DpiFont::DpiFont()
@@ -105,45 +144,40 @@ bool DpiFont::EnsureInitialized()
 		return false;
 	}
 
-	impl_->normalCollection =
-		std::make_unique<Gdiplus::PrivateFontCollection>();
-	impl_->highDpiCollection =
-		std::make_unique<Gdiplus::PrivateFontCollection>();
-
-	if(!LoadFontIntoPrivateCollection(
-		hMod,
-		IDR_FONT_EMBEDDED,
-		*impl_->normalCollection,
-		impl_->normalFontBytes))
+	const std::wstring iniPath = GetIniPath();
+	if(iniPath.empty() || !impl_->ini.LoadIfPresent(iniPath))
 	{
-		impl_->error = L"Failed to load embedded.ttf.";
+		impl_->error = impl_->ini.GetError()
+			? impl_->ini.GetError()
+			: L"Failed to load CpuHzTray.ini.";
 		return false;
 	}
 
-	if(!LoadFontIntoPrivateCollection(
-		hMod,
-		IDR_FONT_EMBEDDED_HIGH_DPI,
-		*impl_->highDpiCollection,
-		impl_->highDpiFontBytes))
+	for(const auto& definition : kFontResources)
 	{
-		impl_->error = L"Failed to load embedded_highdpi.ttf.";
-		return false;
-	}
-
-	if(!ExtractFamilyName(
-		*impl_->normalCollection,
-		impl_->normalFamilyName))
-	{
-		impl_->error = L"Failed to extract the family name from embedded.ttf.";
-		return false;
-	}
-
-	if(!ExtractFamilyName(
-		*impl_->highDpiCollection,
-		impl_->highDpiFamilyName))
-	{
-		impl_->error = L"Failed to extract the family name from embedded_highdpi.ttf.";
-		return false;
+		auto font = std::make_unique<Impl::EmbeddedFont>();
+		font->fileStem = definition.fileStem;
+		font->collection =
+			std::make_unique<Gdiplus::PrivateFontCollection>();
+		if(!LoadFontIntoPrivateCollection(
+			hMod,
+			definition.resourceId,
+			*font->collection,
+			font->fontBytes))
+		{
+			impl_->error = L"Failed to load embedded font: ";
+			impl_->error += definition.fileStem;
+			impl_->error += L".ttf.";
+			return false;
+		}
+		if(!ExtractFamilyName(*font->collection, font->familyName))
+		{
+			impl_->error = L"Failed to extract the family name from embedded font: ";
+			impl_->error += definition.fileStem;
+			impl_->error += L".ttf.";
+			return false;
+		}
+		impl_->fonts.push_back(std::move(font));
 	}
 
 	impl_->ok = true;
@@ -158,23 +192,37 @@ bool DpiFont::Select(UINT dpi, TextFontSelection& outSelection)
 
 	const UINT normalizedDpi = NormalizeDpi(dpi);
 	const bool highDpi = normalizedDpi > kDefaultDpi;
-	if(highDpi)
+	const std::wstring& requestedFont = highDpi
+		? impl_->ini.GetHighDpiFont()
+		: impl_->ini.Get100DpiFont();
+	const auto requestedStyle = highDpi
+		? impl_->ini.GetHighDpiStyle()
+		: impl_->ini.Get100DpiStyle();
+
+	const Impl::EmbeddedFont* selectedFont = nullptr;
+	for(const auto& font : impl_->fonts)
 	{
-		outSelection.privateFontCollection = impl_->highDpiCollection.get();
-		outSelection.familyName = impl_->highDpiFamilyName.c_str();
-		outSelection.rendering.antiAlias = false;
-		outSelection.rendering.renderToArgbBitmap = true;
-		outSelection.rendering.textInkBleedPx = 1;
+		if(_wcsicmp(font->fileStem.c_str(), requestedFont.c_str()) == 0)
+		{
+			selectedFont = font.get();
+			break;
+		}
 	}
-	else
+
+	if(selectedFont == nullptr)
 	{
-		outSelection.privateFontCollection = impl_->normalCollection.get();
-		outSelection.familyName = impl_->normalFamilyName.c_str();
-		outSelection.rendering.antiAlias = false;
-		outSelection.rendering.renderToArgbBitmap = false;
-		outSelection.rendering.textInkBleedPx = 0;
+		impl_->error = L"Configured font is not embedded: ";
+		impl_->error += requestedFont;
+		impl_->error += L".ttf.";
+		return false;
 	}
-	outSelection.style = ResolveTextStyle(normalizedDpi);
+
+	outSelection.privateFontCollection = selectedFont->collection.get();
+	outSelection.familyName = selectedFont->familyName.c_str();
+	outSelection.style = ResolveTextStyle(requestedStyle);
+	outSelection.rendering.antiAlias = false;
+	outSelection.rendering.renderToArgbBitmap = highDpi;
+	outSelection.rendering.textInkBleedPx = highDpi ? 1 : 0;
 	return true;
 }
 
@@ -183,11 +231,11 @@ const wchar_t* DpiFont::GetError() const
 	return impl_->error.empty() ? nullptr : impl_->error.c_str();
 }
 
-int DpiFont::ResolveTextStyle(UINT dpi)
+int DpiFont::ResolveTextStyle(ConfigTextStyle style)
 {
-	return NormalizeDpi(dpi) > kDefaultDpi
-		? Gdiplus::FontStyleRegular
-		: Gdiplus::FontStyleBold;
+	return style == ConfigTextStyle::Bold
+		? Gdiplus::FontStyleBold
+		: Gdiplus::FontStyleRegular;
 }
 
 UINT DpiFont::NormalizeDpi(UINT dpi)

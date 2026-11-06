@@ -4,6 +4,8 @@
 
 #include <string>
 
+#include "FontIni.h"
+
 // Selects the embedded font resource, text style, and render settings for a
 // display DPI. embedded.ttf is used at 100% DPI; embedded_highdpi.ttf is used
 // above 100%.
@@ -40,7 +42,7 @@ public:
 private:
 	struct Impl;
 	bool EnsureInitialized();
-	static int ResolveTextStyle(UINT dpi);
+	static int ResolveTextStyle(ConfigTextStyle style);
 
 	Impl* impl_ = nullptr;
 };

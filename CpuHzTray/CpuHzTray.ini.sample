@@ -1,0 +1,10 @@
+; Copy this file beside CpuHzTray.exe and rename it to CpuHzTray.ini.
+; Font values are file names without the .ttf extension.
+
+[Fonts]
+At100Dpi=embedded
+Above100Dpi=embedded_highdpi
+
+[TextStyle]
+At100Dpi=normal
+Above100Dpi=normal
